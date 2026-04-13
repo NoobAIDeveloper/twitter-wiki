@@ -5,7 +5,7 @@ argument-hint: [natural-language hint, e.g. "split finance from business"]
 
 The user wants to rework the cluster map. The current working directory should be a twitter-wiki KB (it should contain a `CLAUDE.md` and a `.twitter-wiki/` subdirectory). If it doesn't, tell the user to `cd` into their KB first or run `/kb-init` to scaffold one.
 
-Also confirm `.twitter-wiki/cluster-map.yaml` already exists. If it doesn't, there's nothing to recluster — tell the user to run `/kb-ingest` first (which bootstraps the map) and stop.
+Also confirm `.twitter-wiki/cluster-map.json` already exists. If it doesn't, there's nothing to recluster — tell the user to run `/kb-ingest` first (which bootstraps the map) and stop.
 
 Treat `$ARGUMENTS` as an optional natural-language hint describing what the user wants changed (e.g. "merge crypto into finance", "split out cooking"). If empty, proceed with no hint and rely on the signals listed in the workflow.
 

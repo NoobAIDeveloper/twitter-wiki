@@ -13,7 +13,7 @@ The scripts handle the mechanical work (auth, fetching, clustering, lint checks,
 
 The user's KB directory:
 - `raw/bookmarks.jsonl` — canonical bookmark store, one JSON per line. **Read-only for you.** Only `sync.py` writes here.
-- `raw/bookmarks/<topic>.md` — topic batches derived from `cluster-map.yaml`. **Do not hand-edit.** Re-run preprocess to regenerate.
+- `raw/bookmarks/<topic>.md` — topic batches derived from `cluster-map.json`. **Do not hand-edit.** Re-run preprocess to regenerate.
 - `raw/bookmarks/_manifest.md` — index of batches with counts. Generated.
 - `wiki/` — **yours.** Synthesized markdown pages. You write and rewrite freely.
 - `wiki/index.md` — markdown table catalog of all wiki pages. You maintain it.
@@ -21,12 +21,12 @@ The user's KB directory:
 - `wiki/queries/` — saved query-result pages (created by `/kb-query` when answers are worth keeping).
 - `notes/` — **user-only.** You NEVER read this directory. You NEVER write to it.
 - `CLAUDE.md` — KB-level config & rules. Loaded automatically.
-- `.twitter-wiki/cluster-map.yaml` — topic → match rules. **You generate this on first ingest.**
+- `.twitter-wiki/cluster-map.json` — topic → match rules. **You generate this on first ingest.**
 - `.twitter-wiki/sync-meta.json` — sync state. Owned by `sync.py`. Don't hand-edit.
 - `.twitter-wiki/ingest-state.json` — tracks which clusters have been synthesized. Owned by you (you update it during ingest).
 
 The skill itself (read-only reference material):
-- `~/.claude/skills/twitter-wiki/scripts/*.py` — bundled Python scripts you invoke via `uv run`
+- `~/.claude/skills/twitter-wiki/scripts/*.py` — bundled Python scripts. Invoke via `~/.claude/skills/twitter-wiki/.venv/bin/python <script> --kb $(pwd)` (the venv ships with required deps).
 - `~/.claude/skills/twitter-wiki/references/*.md` — verbose specs you load on demand via `@references/...`
 - `~/.claude/skills/twitter-wiki/templates/CLAUDE.md.tmpl` — KB template used by init
 
@@ -48,14 +48,14 @@ These slash commands live in `~/.claude/commands/kb-*.md` and each one delegates
 
 The most important workflow. Never deviate from this order.
 
-1. **Bootstrap check.** If `.twitter-wiki/cluster-map.yaml` does NOT exist:
+1. **Bootstrap check.** If `.twitter-wiki/cluster-map.json` does NOT exist:
    - Load `@~/.claude/skills/twitter-wiki/references/clustering-guide.md`.
    - Read a **diversified sample** of `raw/bookmarks.jsonl`: aim for ~80 bookmarks spread across the time range, across distinct authors, and across distinct hashtags. Don't just take the first 80.
    - Derive **8–20 topics** that fit THIS user's actual content. Topics emerge from what's bookmarked — never from a generic preset. If the user bookmarks recipes, cooking topics; if they bookmark trades, finance topics; etc.
-   - Write `.twitter-wiki/cluster-map.yaml`. Each topic entry: `name`, `description` (one line), `match` (keywords / hashtags / author handles / regex). See `@~/.claude/skills/twitter-wiki/references/clustering-guide.md` for format.
+   - Write `.twitter-wiki/cluster-map.json`. Each topic entry: `name`, `description` (one line), `match` (keywords / hashtags / author handles / regex). See `@~/.claude/skills/twitter-wiki/references/clustering-guide.md` for format.
    - Briefly tell the user what topics you derived and why. Offer them a chance to tweak before proceeding (one round of edits, then move on).
 
-2. **Run preprocess.** `uv run ~/.claude/skills/twitter-wiki/scripts/preprocess.py --kb $(pwd)`. This writes `raw/bookmarks/<topic>.md` files and `_manifest.md`. Bookmarks matching nothing land in `_unsorted.md`.
+2. **Run preprocess.** `~/.claude/skills/twitter-wiki/.venv/bin/python ~/.claude/skills/twitter-wiki/scripts/preprocess.py --kb $(pwd)`. This writes `raw/bookmarks/<topic>.md` files and `_manifest.md`. Bookmarks matching nothing land in `_unsorted.md`.
 
 3. **Read existing state.**
    - Read `wiki/index.md` (or note it doesn't exist yet).
@@ -84,11 +84,11 @@ The most important workflow. Never deviate from this order.
 
 When the user runs `/kb-recluster` (optionally with a natural-language hint like "merge two topics" or "split out finance from business"):
 
-1. Back up the existing map: `cp .twitter-wiki/cluster-map.yaml .twitter-wiki/cluster-map.yaml.bak`.
-2. Read the current `cluster-map.yaml`, current `_manifest.md`, and `wiki/index.md`.
+1. Back up the existing map: `cp .twitter-wiki/cluster-map.json .twitter-wiki/cluster-map.json.bak`.
+2. Read the current `cluster-map.json`, current `_manifest.md`, and `wiki/index.md`.
 3. Re-sample bookmarks (the corpus is likely much larger than at bootstrap time). Same diversity rules.
 4. Apply the user's hint if any. Otherwise look for: topics that grew much larger than others (split candidates), topics that became near-duplicates (merge candidates), topics with <5 bookmarks (collapse candidates), unsorted bookmarks that suggest a missing topic.
-5. Write the new `cluster-map.yaml`. Briefly explain the diff to the user.
+5. Write the new `cluster-map.json`. Briefly explain the diff to the user.
 6. Run preprocess.
 7. Reconcile wiki pages:
    - **Renamed topic** → rename the wiki file, update wikilinks, note in log.
@@ -109,13 +109,13 @@ When the user asks a question via `/kb-query` (or natural language):
 
 ## Lint workflow
 
-1. Run `uv run ~/.claude/skills/twitter-wiki/scripts/lint.py --kb $(pwd)`. It returns a structured report of issues (missing frontmatter, missing TLDR, missing counter-args on concept pages, broken wikilinks, orphan pages, stale pages).
+1. Run `~/.claude/skills/twitter-wiki/.venv/bin/python ~/.claude/skills/twitter-wiki/scripts/lint.py --kb $(pwd)`. It returns a structured report of issues (missing frontmatter, missing TLDR, missing counter-args on concept pages, broken wikilinks, orphan pages, stale pages).
 2. For each issue, decide: can you fix it autonomously? If yes, fix it. If no (e.g. requires content judgment beyond what's in the existing pages), report it to the user.
 3. Append to `wiki/log.md` under `lint`.
 
 ## Sync workflow
 
-1. Run `uv run ~/.claude/skills/twitter-wiki/scripts/sync.py --kb $(pwd)`. It handles browser cookie extraction, GraphQL pagination, dedupe, and writes to `raw/bookmarks.jsonl` + `.twitter-wiki/sync-meta.json`.
+1. Run `~/.claude/skills/twitter-wiki/.venv/bin/python ~/.claude/skills/twitter-wiki/scripts/sync.py --kb $(pwd)`. It handles browser cookie extraction, GraphQL pagination, dedupe, and writes to `raw/bookmarks.jsonl` + `.twitter-wiki/sync-meta.json`.
 2. Report new bookmark count.
 3. If new bookmarks were added, suggest `/kb-ingest`.
 4. If sync failed with auth error, tell the user to re-login to X in their browser.
@@ -127,8 +127,8 @@ When the user asks a question via `/kb-query` (or natural language):
 - **Filenames are kebab-case.** No spaces, no underscores, no capitals.
 - **Wikilinks use `[[double-brackets]]`.** External links use markdown `[text](url)`.
 - **Topics emerge from the user's actual bookmarks.** Never assume a domain. Never hardcode topic categories. Re-derive from content every time.
-- **Preprocess never runs without `cluster-map.yaml`.** If it's missing, bootstrap it first by reading bookmarks and writing the map.
-- **Sync state files in `.twitter-wiki/` are owned by scripts.** Don't hand-edit `sync-meta.json`. You may edit `cluster-map.yaml` (you generated it) and `ingest-state.json` (you maintain it).
+- **Preprocess never runs without `cluster-map.json`.** If it's missing, bootstrap it first by reading bookmarks and writing the map.
+- **Sync state files in `.twitter-wiki/` are owned by scripts.** Don't hand-edit `sync-meta.json`. You may edit `cluster-map.json` (you generated it) and `ingest-state.json` (you maintain it).
 - **High-engagement tweets get direct quotes.** If a tweet has >1000 likes, include a short verbatim quote (with attribution) in the wiki page rather than just paraphrasing.
 - **Don't ingest into a wiki page if the source batch hasn't changed.** Check `ingest-state.json` first. Avoid redundant LLM work.
 

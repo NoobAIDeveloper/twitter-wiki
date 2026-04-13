@@ -26,7 +26,7 @@ Created: {{created_date}}
 ├── notes/                       # User-only personal notes — Claude never reads or writes here
 ├── .twitter-wiki/
 │   ├── sync-meta.json           # Sync state (cursor, last sync time, count)
-│   ├── cluster-map.yaml         # Topic → match rules (Claude generates)
+│   ├── cluster-map.json         # Topic → match rules (Claude generates)
 │   └── ingest-state.json        # Which batches were synthesized at which sizes
 ├── .obsidian/                   # Obsidian vault config
 └── .gitignore
@@ -88,7 +88,7 @@ Synthesized prose. Group bookmarks by sub-theme, not by author. Attribute insigh
 ### Naming
 
 - **kebab-case filenames:** `large-language-models.md`, not `LargeLanguageModels.md` or `large_language_models.md`.
-- Filenames are derived from the topic name in `cluster-map.yaml` (also kebab-case).
+- Filenames are derived from the topic name in `cluster-map.json` (also kebab-case).
 
 ### Linking
 
@@ -110,7 +110,7 @@ Single markdown table catalog. Regenerated on every ingest and recluster. Format
 ```markdown
 ---
 title: "Knowledge Base Index"
-type: reference
+type: index
 updated: YYYY-MM-DD
 ---
 
@@ -162,7 +162,7 @@ These are run by the user via slash commands and orchestrated by the **twitter-w
 | Command | Effect |
 |---|---|
 | `/kb-sync` | Pulls new bookmarks from the user's browser session into `raw/bookmarks.jsonl` |
-| `/kb-ingest` | First run bootstraps `cluster-map.yaml`. Then preprocesses into batches, then synthesizes/updates wiki pages |
+| `/kb-ingest` | First run bootstraps `cluster-map.json`. Then preprocesses into batches, then synthesizes/updates wiki pages |
 | `/kb-recluster [hint]` | Re-derives the topic map and reconciles affected wiki pages |
 | `/kb-query <q>` | Answers a question grounded in the wiki, optionally saves the answer under `wiki/queries/` |
 | `/kb-lint` | Static + semantic health check, fixes what's auto-fixable |

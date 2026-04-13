@@ -8,7 +8,7 @@ The user wants to scaffold a new twitter-wiki KB.
 Run the init script:
 
 ```bash
-uv run ~/.claude/skills/twitter-wiki/scripts/init.py $ARGUMENTS
+~/.claude/skills/twitter-wiki/.venv/bin/python ~/.claude/skills/twitter-wiki/scripts/init.py $ARGUMENTS
 ```
 
 If `$ARGUMENTS` is empty, ask the user where they want the KB to live (suggest `~/twitter-wiki` as a default). Don't proceed without an explicit path.

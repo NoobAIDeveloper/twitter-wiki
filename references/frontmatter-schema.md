@@ -56,7 +56,7 @@ If a page doesn't clearly fit, use `concept`.
 ## Filename vs title
 
 - **Filename** is kebab-case and matches the topic slug from
-  `cluster-map.yaml`: `llm-agents.md`, not `LLMAgents.md`.
+  `cluster-map.json`: `llm-agents.md`, not `LLMAgents.md`.
 - **Title** in frontmatter is human-readable: `title: LLM Agents`.
 
 ## Examples

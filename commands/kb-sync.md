@@ -8,7 +8,7 @@ The user wants to sync their Twitter/X bookmarks into the current KB. The curren
 Run the sync script:
 
 ```bash
-uv run ~/.claude/skills/twitter-wiki/scripts/sync.py --kb $(pwd) $ARGUMENTS
+~/.claude/skills/twitter-wiki/.venv/bin/python ~/.claude/skills/twitter-wiki/scripts/sync.py --kb $(pwd) $ARGUMENTS
 ```
 
 The script handles browser cookie extraction, GraphQL pagination, dedupe, and writing to `raw/bookmarks.jsonl`. Its stdout is a one-line summary you can pass through. Its stderr is verbose progress — surface only the important parts to the user (added count, total, errors).

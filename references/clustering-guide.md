@@ -1,7 +1,7 @@
 # Clustering guide
 
 Loaded on first ingest and on `/kb-recluster`. The goal is to produce
-`.twitter-wiki/cluster-map.yaml` — a deterministic routing map that
+`.twitter-wiki/cluster-map.json` — a deterministic routing map that
 `preprocess.py` applies to the bookmarks.
 
 Topics emerge from **this user's actual bookmarks**. Never from a preset.
@@ -39,18 +39,24 @@ engagement numbers for clustering.
 - Descriptions are one line — they show up in `_manifest.md` and help
   future-you remember what the topic is for.
 
-## cluster-map.yaml format
+## cluster-map.json format
 
-```yaml
-version: 1
-topics:
-  - name: topic-slug
-    description: One-line description of what belongs here.
-    match:
-      keywords: [list of case-insensitive substrings matched against tweet text]
-      hashtags: [list of hashtags without the #, case-insensitive]
-      authors: [list of handles without the @, case-insensitive]
-      regex:   [list of Python regex patterns, case-insensitive]
+```json
+{
+  "version": 1,
+  "topics": [
+    {
+      "name": "topic-slug",
+      "description": "One-line description of what belongs here.",
+      "match": {
+        "keywords": ["case-insensitive substrings matched against tweet text"],
+        "hashtags": ["hashtags without the #, case-insensitive"],
+        "authors":  ["handles without the @, case-insensitive"],
+        "regex":    ["Python regex patterns, case-insensitive"]
+      }
+    }
+  ]
+}
 ```
 
 All four `match` fields are optional; include only what you need. A
@@ -71,21 +77,29 @@ rule types, OR across entries within a type).
 
 ### Example (domain-neutral — do not copy wholesale)
 
-```yaml
-version: 1
-topics:
-  - name: home-cooking
-    description: Recipes, techniques, and kitchen tips for home cooks.
-    match:
-      keywords: [recipe, sourdough, braise, weeknight dinner]
-      hashtags: [cooking, recipes]
-      authors: [kenjilopezalt]
-
-  - name: personal-finance
-    description: Saving, investing, taxes, and household money decisions.
-    match:
-      keywords: [index fund, 401k, roth, emergency fund]
-      regex: ["\\$[0-9]+[km]?\\s+saved"]
+```json
+{
+  "version": 1,
+  "topics": [
+    {
+      "name": "home-cooking",
+      "description": "Recipes, techniques, and kitchen tips for home cooks.",
+      "match": {
+        "keywords": ["recipe", "sourdough", "braise", "weeknight dinner"],
+        "hashtags": ["cooking", "recipes"],
+        "authors":  ["kenjilopezalt"]
+      }
+    },
+    {
+      "name": "personal-finance",
+      "description": "Saving, investing, taxes, and household money decisions.",
+      "match": {
+        "keywords": ["index fund", "401k", "roth", "emergency fund"],
+        "regex":    ["\\$[0-9]+[km]?\\s+saved"]
+      }
+    }
+  ]
+}
 ```
 
 ## When to recluster
@@ -98,6 +112,6 @@ The user invokes `/kb-recluster`. Look for:
   candidate** (fold into a broader topic or remove).
 - `_unsorted.md` is large or reveals a missing topic → **add a topic**.
 
-Back up `cluster-map.yaml` before rewriting (the skill does this via
+Back up `cluster-map.json` before rewriting (the skill does this via
 `cp ... .bak`). Explain the diff to the user before re-running
 preprocess.

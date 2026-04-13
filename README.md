@@ -21,7 +21,7 @@ get both.
 X bookmarks  →  sync.py        →  raw/bookmarks.jsonl
                  (reads your browser cookies, hits X's internal GraphQL)
 
-bookmarks    →  Claude         →  .twitter-wiki/cluster-map.yaml
+bookmarks    →  Claude         →  .twitter-wiki/cluster-map.json
                  (samples your content, derives 8–20 topics)
 
 cluster map  →  preprocess.py  →  raw/bookmarks/<topic>.md
@@ -41,7 +41,6 @@ Claude's. The `notes/` directory is yours — the skill never reads it.
 
 - macOS or Linux (Windows not supported in v1 — cookie decryption uses DPAPI there).
 - Python 3.10+.
-- [`uv`](https://docs.astral.sh/uv/) — the scripts use `uv run` for inline dependencies.
 - [Claude Code](https://claude.com/claude-code) installed and working.
 - A browser (Chrome, Brave, or Edge) logged into x.com.
 - Optional: [Obsidian](https://obsidian.md) to read the wiki. Plain markdown works too.
@@ -116,7 +115,7 @@ All commands are run inside a KB directory.
 my-kb/
 ├── CLAUDE.md                          # KB-level rules (generated)
 ├── .twitter-wiki/
-│   ├── cluster-map.yaml               # Claude-generated topic → match rules
+│   ├── cluster-map.json               # Claude-generated topic → match rules
 │   ├── sync-meta.json                 # Owned by sync.py
 │   └── ingest-state.json              # Tracks what's been synthesized
 ├── raw/
@@ -166,8 +165,9 @@ There is **no built-in topic list**. On first `/kb-ingest`:
 2. Claude derives 8–20 kebab-case topics from what it sees. If your bookmarks
    are mostly recipes, you get cooking topics. If they're mostly trades,
    finance topics. The skill is domain-agnostic.
-3. Claude writes `.twitter-wiki/cluster-map.yaml` — topic name, description,
-   and match rules (keywords / hashtags / authors / regex).
+3. Claude writes `.twitter-wiki/cluster-map.json` — topic name, description,
+   and match rules (keywords / hashtags / authors / regex). It's plain JSON
+   so you can hand-edit it in any text editor.
 4. You review. One round of edits, then proceed.
 5. `preprocess.py` applies the map deterministically. **Multi-assign**: a
    bookmark can land in multiple batches (a tweet about "LLM evals in
@@ -242,7 +242,7 @@ twitter-wiki/
 ├── install.sh                     # Installer (symlinks into ~/.claude/)
 ├── commands/                      # Slash command definitions
 │   └── kb-*.md
-├── scripts/                       # Python scripts, invoked via `uv run`
+├── scripts/                       # Python scripts, invoked via the bundled .venv
 │   ├── init.py                    # Scaffold a KB
 │   ├── sync.py                    # Pull bookmarks from X
 │   ├── cookies.py                 # Browser cookie extraction (internal)

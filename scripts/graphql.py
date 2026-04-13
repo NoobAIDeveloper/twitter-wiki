@@ -1,8 +1,4 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.10"
-# dependencies = []
-# ///
+#!/usr/bin/env python3
 """
 graphql.py — Fetch Twitter/X bookmarks via the internal GraphQL API.
 
@@ -14,7 +10,7 @@ uses, paginates through all of the authenticated user's bookmarks, and yields
 bookmark dicts that conform to the twitter-wiki canonical schema.
 
 Usage:
-    uv run scripts/graphql.py --ct0 <ct0> --auth-token <auth_token> [--max-pages N]
+    python3 scripts/graphql.py --ct0 <ct0> --auth-token <auth_token> [--max-pages N]
 
 Only stdlib is used (urllib.request + json). No third-party dependencies.
 """

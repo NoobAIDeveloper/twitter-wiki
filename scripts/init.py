@@ -1,13 +1,9 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.10"
-# dependencies = []
-# ///
+#!/usr/bin/env python3
 """
 Scaffold a new twitter-wiki knowledge base.
 
 Usage:
-    uv run scripts/init.py <path> [--no-obsidian] [--no-git] [--force]
+    python3 scripts/init.py <path> [--no-obsidian] [--no-git] [--force]
 
 Creates the directory tree, renders CLAUDE.md from the template, and copies
 Obsidian + gitignore config. Idempotent unless --force is set: refuses to

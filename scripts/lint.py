@@ -1,10 +1,4 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.10"
-# dependencies = [
-#   "pyyaml>=6",
-# ]
-# ///
+#!/usr/bin/env python3
 """
 Lint a twitter-wiki KB.
 
@@ -13,12 +7,12 @@ frontmatter, bad `type` values, invalid dates, non-kebab-case tags or
 filenames, missing TLDR sections, missing Counter-arguments on concept
 pages, broken wikilinks, and orphan pages.
 
-The report is structured so Claude can act on it: each issue has a
-`code`, the offending `path`, and a short `message`. Claude reads this,
-fixes what's mechanical, and escalates what needs content judgment.
+Frontmatter is YAML by convention but we parse a restricted subset
+inline (flat key:value pairs, inline-list values, quoted or unquoted
+scalars). This keeps the script stdlib-only.
 
 Usage:
-    uv run scripts/lint.py --kb <kb-path> [--json]
+    python3 scripts/lint.py --kb <kb-path> [--json]
 
 Exit code: 0 if clean, 1 if any issues were found.
 """
@@ -33,8 +27,6 @@ from dataclasses import dataclass, asdict
 from datetime import date
 from pathlib import Path
 from typing import Any
-
-import yaml
 
 
 VALID_TYPES = {"concept", "person", "event", "resource", "query", "stale", "index", "log"}
@@ -58,16 +50,60 @@ class Issue:
 
 # ---- checks per page --------------------------------------------------------
 
+def _strip_quotes(s: str) -> str:
+    s = s.strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ('"', "'"):
+        return s[1:-1]
+    return s
+
+
+def _parse_scalar(s: str) -> Any:
+    s = s.strip()
+    if not s:
+        return ""
+    # inline list
+    if s.startswith("[") and s.endswith("]"):
+        inner = s[1:-1].strip()
+        if not inner:
+            return []
+        out: list[str] = []
+        buf = ""
+        quote = None
+        for ch in inner:
+            if quote:
+                if ch == quote:
+                    quote = None
+                else:
+                    buf += ch
+            elif ch in ('"', "'"):
+                quote = ch
+            elif ch == ",":
+                out.append(_strip_quotes(buf))
+                buf = ""
+            else:
+                buf += ch
+        if buf.strip():
+            out.append(_strip_quotes(buf))
+        return out
+    return _strip_quotes(s)
+
+
 def parse_frontmatter(text: str) -> tuple[dict[str, Any] | None, str, str | None]:
     m = FRONTMATTER_RE.match(text)
     if not m:
         return None, text, "no frontmatter block"
-    try:
-        meta = yaml.safe_load(m.group(1)) or {}
-    except yaml.YAMLError as e:
-        return None, m.group(2), f"invalid YAML: {e}"
-    if not isinstance(meta, dict):
-        return None, m.group(2), "frontmatter is not a mapping"
+    meta: dict[str, Any] = {}
+    for i, line in enumerate(m.group(1).splitlines(), 1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if ":" not in stripped:
+            return None, m.group(2), f"line {i}: expected `key: value`, got {stripped!r}"
+        key, _, value = stripped.partition(":")
+        key = key.strip()
+        if not key:
+            return None, m.group(2), f"line {i}: empty key"
+        meta[key] = _parse_scalar(value)
     return meta, m.group(2), None
 
 

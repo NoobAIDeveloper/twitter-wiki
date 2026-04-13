@@ -1,10 +1,4 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.10"
-# dependencies = [
-#   "cryptography>=42",
-# ]
-# ///
+#!/usr/bin/env python3
 """
 Sync Twitter/X bookmarks into a twitter-wiki KB.
 
@@ -15,7 +9,7 @@ the X bookmarks GraphQL endpoint until it hits the newest already-known bookmark
 writes back.
 
 Usage:
-    uv run scripts/sync.py --kb <kb-path> [--browser auto|chrome|brave|edge]
+    python3 scripts/sync.py --kb <kb-path> [--browser auto|chrome|brave|edge]
                                           [--full]
                                           [--max-pages N]
                                           [--delay-ms N]

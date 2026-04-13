@@ -1,10 +1,4 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.10"
-# dependencies = [
-#   "cryptography>=42",
-# ]
-# ///
+#!/usr/bin/env python3
 """Extract Twitter/X session cookies (ct0, auth_token) from a local Chromium browser.
 
 Supports Chrome, Brave, and Microsoft Edge on macOS and Linux. Ports the

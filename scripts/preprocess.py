@@ -1,14 +1,8 @@
-#!/usr/bin/env -S uv run --script
-# /// script
-# requires-python = ">=3.10"
-# dependencies = [
-#   "pyyaml>=6",
-# ]
-# ///
+#!/usr/bin/env python3
 """
 Apply the cluster map to bookmarks and emit per-topic batch files.
 
-Reads `<kb>/.twitter-wiki/cluster-map.yaml` and `<kb>/raw/bookmarks.jsonl`,
+Reads `<kb>/.twitter-wiki/cluster-map.json` and `<kb>/raw/bookmarks.jsonl`,
 matches each bookmark against every topic's rules (multi-assign — a single
 bookmark can land in more than one batch), and writes:
 
@@ -16,12 +10,12 @@ bookmark can land in more than one batch), and writes:
     <kb>/raw/bookmarks/_unsorted.md    bookmarks that matched no topic
     <kb>/raw/bookmarks/_manifest.md    index with counts
 
-Claude generates cluster-map.yaml on first ingest by sampling the user's
+Claude generates cluster-map.json on first ingest by sampling the user's
 actual bookmarks. This script is the deterministic applier — it never
 invents topics, it just routes.
 
 Usage:
-    uv run scripts/preprocess.py --kb <kb-path>
+    python3 scripts/preprocess.py --kb <kb-path>
 """
 
 from __future__ import annotations
@@ -34,8 +28,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-
-import yaml
 
 
 # ---- cluster map ------------------------------------------------------------
@@ -50,7 +42,7 @@ class Topic:
     regexes: list[re.Pattern[str]] = field(default_factory=list)
 
     @classmethod
-    def from_yaml(cls, raw: dict[str, Any]) -> "Topic":
+    def from_dict(cls, raw: dict[str, Any]) -> "Topic":
         name = str(raw["name"]).strip()
         if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name):
             raise ValueError(
@@ -95,15 +87,18 @@ def load_cluster_map(path: Path) -> list[Topic]:
             f"error: {path} not found.\n"
             "Bootstrap it first by sampling bookmarks and writing the topic map."
         )
-    data = yaml.safe_load(path.read_text()) or {}
-    topics_raw = data.get("topics")
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError as e:
+        sys.exit(f"error: {path} is not valid JSON: {e}")
+    topics_raw = data.get("topics") if isinstance(data, dict) else None
     if not isinstance(topics_raw, list) or not topics_raw:
-        sys.exit(f"error: {path} must define a non-empty `topics:` list")
-    topics = [Topic.from_yaml(t) for t in topics_raw]
+        sys.exit(f"error: {path} must define a non-empty `topics` list")
+    topics = [Topic.from_dict(t) for t in topics_raw]
     names = [t.name for t in topics]
     dupes = {n for n in names if names.count(n) > 1}
     if dupes:
-        sys.exit(f"error: duplicate topic names in cluster-map.yaml: {sorted(dupes)}")
+        sys.exit(f"error: duplicate topic names in cluster-map.json: {sorted(dupes)}")
     return topics
 
 
@@ -170,7 +165,7 @@ def write_batch(
         header = [
             "# _unsorted",
             "",
-            "Bookmarks that matched no topic in cluster-map.yaml. Add a rule "
+            "Bookmarks that matched no topic in cluster-map.json. Add a rule "
             "(or a new topic) and re-run preprocess to route them.",
             "",
         ]
@@ -236,12 +231,12 @@ def clean_batch_dir(batch_dir: Path) -> None:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Apply cluster-map.yaml to bookmarks.")
+    ap = argparse.ArgumentParser(description="Apply cluster-map.json to bookmarks.")
     ap.add_argument("--kb", required=True, type=Path, help="KB root directory")
     args = ap.parse_args()
 
     kb: Path = args.kb.resolve()
-    map_path = kb / ".twitter-wiki" / "cluster-map.yaml"
+    map_path = kb / ".twitter-wiki" / "cluster-map.json"
     jsonl_path = kb / "raw" / "bookmarks.jsonl"
     batch_dir = kb / "raw" / "bookmarks"
 
