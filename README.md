@@ -216,6 +216,12 @@ and [`references/frontmatter-schema.md`](references/frontmatter-schema.md).
 into X in your browser, then retry. If the browser wasn't running recently,
 the cookie database may be locked — close it.
 
+**`/kb-sync` fails with "keychain dialog timed out".** On the first sync, macOS
+pops a dialog asking permission for `security` to read the browser's Safe
+Storage password. You now have 2 minutes to enter your password — but if you
+miss it, just rerun `/kb-sync`. **Tip:** click **Always Allow** the first time
+so you're never prompted again.
+
 **`/kb-sync` says no browser found.** The skill looks for Chrome, Brave, and
 Edge at their standard paths on macOS/Linux. Make sure you're logged in.
 

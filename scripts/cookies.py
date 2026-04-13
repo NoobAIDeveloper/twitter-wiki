@@ -123,8 +123,17 @@ def _pbkdf2(password: bytes, iterations: int) -> bytes:
     return kdf.derive(password)
 
 
-def _run(argv: list[str], timeout: float = 5.0) -> str | None:
-    """Run a subprocess, return stripped stdout or None on any failure."""
+class _KeychainTimeout(Exception):
+    """Raised when the user doesn't approve the macOS keychain dialog in time."""
+
+
+def _run(argv: list[str], timeout: float = 5.0, raise_on_timeout: bool = False) -> str | None:
+    """Run a subprocess, return stripped stdout or None on any failure.
+
+    If ``raise_on_timeout`` is True, a subprocess.TimeoutExpired is re-raised as
+    ``_KeychainTimeout`` so callers can surface a clear user-facing message
+    instead of silently falling through.
+    """
     try:
         result = subprocess.run(
             argv,
@@ -133,7 +142,15 @@ def _run(argv: list[str], timeout: float = 5.0) -> str | None:
             timeout=timeout,
             check=False,
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+    except subprocess.TimeoutExpired:
+        if raise_on_timeout:
+            raise _KeychainTimeout(
+                f"Timed out after {timeout:.0f}s waiting for the macOS keychain dialog. "
+                f"Rerun and approve the prompt — tip: click 'Always Allow' so you won't "
+                f"be prompted again."
+            )
+        return None
+    except (FileNotFoundError, OSError):
         return None
     if result.returncode != 0:
         return None
@@ -143,10 +160,11 @@ def _run(argv: list[str], timeout: float = 5.0) -> str | None:
 
 def _macos_key(browser: Browser) -> bytes:
     for service, account in browser.keychain_entries:
-        pw = _run([
-            "security", "find-generic-password", "-w",
-            "-s", service, "-a", account,
-        ])
+        pw = _run(
+            ["security", "find-generic-password", "-w", "-s", service, "-a", account],
+            timeout=120.0,
+            raise_on_timeout=True,
+        )
         if pw:
             return _pbkdf2(pw.encode("utf-8"), MAC_ITERATIONS)
     raise RuntimeError(
@@ -315,6 +333,8 @@ def extract_twitter_cookies(browser: str = "auto") -> dict[str, str]:
         for bid in candidates:
             try:
                 return _extract_for(_find_browser(bid))
+            except _KeychainTimeout:
+                raise
             except (RuntimeError, FileNotFoundError) as exc:
                 last_error = exc
                 print(
@@ -408,6 +428,9 @@ def _main(argv: list[str] | None = None) -> int:
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 3
+    except _KeychainTimeout as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 4
     except RuntimeError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
