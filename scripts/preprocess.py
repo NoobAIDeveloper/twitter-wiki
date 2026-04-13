@@ -209,7 +209,7 @@ def load_bookmarks(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         sys.exit(f"error: {path} not found. Run sync.py first.")
     out = []
-    for i, line in enumerate(path.read_text().splitlines(), 1):
+    for i, line in enumerate(path.read_text().split("\n"), 1):
         line = line.strip()
         if not line:
             continue
