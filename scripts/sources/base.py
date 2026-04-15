@@ -106,3 +106,24 @@ def merge_items(
         reverse=True,
     )
     return merged, added
+
+
+def replace_source_items(
+    kb_dir: Path,
+    source_id: str,
+    new_items: list[dict[str, Any]],
+) -> tuple[int, int]:
+    """Rewrite raw/items.jsonl, replacing all items with the given source.
+
+    Other sources' items are preserved untouched. Returns (total_items,
+    items_in_this_source).
+    """
+    items_path = kb_dir / "raw" / "items.jsonl"
+    try:
+        existing = load_items(items_path)
+    except ValueError:
+        existing = []
+    kept = [it for it in existing if it.get("source") != source_id]
+    combined, _ = merge_items(kept, new_items)
+    write_items(items_path, combined)
+    return len(combined), len(new_items)

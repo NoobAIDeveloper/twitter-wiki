@@ -27,13 +27,6 @@ from pathlib import Path
 # sibling imports — sync.py lives next to cookies.py and graphql.py
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from cookies import extract_twitter_cookies, list_available_browsers  # noqa: E402
-from graphql import (  # noqa: E402
-    AuthError,
-    FetchOptions,
-    RateLimitError,
-    fetch_bookmarks,
-)
 from sources.base import load_items, merge_items, write_items  # noqa: E402
 from sources.x import SOURCE_ID as X_SOURCE_ID, bookmarks_to_items  # noqa: E402
 
@@ -171,6 +164,10 @@ def sync(
     max_pages: int = 200,
     delay_ms: int = 600,
 ) -> int:
+    # Lazy imports — cryptography is only needed for the X source.
+    from cookies import extract_twitter_cookies, list_available_browsers
+    from graphql import AuthError, FetchOptions, RateLimitError, fetch_bookmarks
+
     jsonl_path, meta_path, _state_dir = _kb_paths(kb)
 
     existing = _load_jsonl(jsonl_path)
@@ -278,9 +275,27 @@ def sync(
     return 0
 
 
+# ---- Source dispatcher -----------------------------------------------------
+
+def _sync_claude_code(kb: Path, *, include_self: bool = False) -> int:
+    from sources import claude_code
+    from sources.base import replace_source_items
+
+    print(f"[sync] source=claude-code · scanning {claude_code.PROJECTS_DIR}", file=sys.stderr)
+    items = claude_code.sync(kb, include_self=include_self)
+    total, this_source = replace_source_items(kb, claude_code.SOURCE_ID, items)
+    print(
+        f"[sync] claude-code: {this_source} Q+A pair(s) · items.jsonl now "
+        f"has {total} total",
+        file=sys.stderr,
+    )
+    print(f"sync complete: claude-code → {this_source} items")
+    return 0
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Sync Twitter/X bookmarks into a twitter-wiki KB."
+        description="Sync data from one or more sources into a personal-wiki KB."
     )
     parser.add_argument(
         "--kb",
@@ -289,27 +304,52 @@ def main() -> None:
         help="Path to the KB root (default: current working directory)",
     )
     parser.add_argument(
+        "--source",
+        default="x",
+        help="Source to sync: x (default), claude-code, all",
+    )
+    parser.add_argument(
         "--browser",
         default="auto",
-        help="Browser to extract cookies from (auto, chrome, brave, edge)",
+        help="(x) Browser to extract cookies from (auto, chrome, brave, edge)",
     )
     parser.add_argument(
         "--full",
         action="store_true",
-        help="Full sync — don't stop at the most recent existing bookmark",
+        help="(x) Full sync — don't stop at the most recent existing bookmark",
     )
-    parser.add_argument("--max-pages", type=int, default=200)
-    parser.add_argument("--delay-ms", type=int, default=600)
+    parser.add_argument("--max-pages", type=int, default=200, help="(x) pagination cap")
+    parser.add_argument("--delay-ms", type=int, default=600, help="(x) delay between pages")
+    parser.add_argument(
+        "--include-self",
+        action="store_true",
+        help="(claude-code) Include Claude Code sessions from the KB's own directory.",
+    )
     args = parser.parse_args()
 
-    code = sync(
-        args.kb,
-        browser=args.browser,
-        full=args.full,
-        max_pages=args.max_pages,
-        delay_ms=args.delay_ms,
+    sources_to_run = (
+        ["x", "claude-code"] if args.source == "all" else [args.source]
     )
-    sys.exit(code)
+
+    exit_code = 0
+    for src in sources_to_run:
+        if src == "x":
+            rc = sync(
+                args.kb,
+                browser=args.browser,
+                full=args.full,
+                max_pages=args.max_pages,
+                delay_ms=args.delay_ms,
+            )
+        elif src == "claude-code":
+            rc = _sync_claude_code(args.kb, include_self=args.include_self)
+        else:
+            print(f"error: unknown source {src!r}", file=sys.stderr)
+            rc = 64
+        if rc != 0:
+            exit_code = rc
+            # Keep going with other sources even if one fails.
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":
