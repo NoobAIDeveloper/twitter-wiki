@@ -1,24 +1,34 @@
 ---
-description: Sync new bookmarks from your logged-in X session into this KB
-argument-hint: [--browser auto|chrome|brave|edge] [--full] [--max-pages N]
+description: Sync data from one or more configured sources into this KB
+argument-hint: [--source x|claude-code|browser-bookmarks|github-stars|kindle|all] [source-specific flags]
 ---
 
-The user wants to sync their Twitter/X bookmarks into the current KB. The current working directory should be a twitter-wiki KB (it should contain a `CLAUDE.md` and a `.twitter-wiki/` subdirectory). If it doesn't, tell the user to `cd` into their KB first or run `/kb-init` to scaffold one.
+The user wants to sync data into the current KB. The current working directory should be a KB (it should contain a `CLAUDE.md` and a `.twitter-wiki/` subdirectory). If it doesn't, tell the user to `cd` into their KB first or run `/kb-init` to scaffold one.
 
-Run the sync script:
+Run the sync dispatcher:
 
 ```bash
 ~/.claude/skills/twitter-wiki/.venv/bin/python ~/.claude/skills/twitter-wiki/scripts/sync.py --kb $(pwd) $ARGUMENTS
 ```
 
-The script handles browser cookie extraction, GraphQL pagination, dedupe, and writing to `raw/bookmarks.jsonl`. Its stdout is a one-line summary you can pass through. Its stderr is verbose progress — surface only the important parts to the user (added count, total, errors).
+Supported sources:
+
+- **x** (default) — Twitter/X bookmarks via browser cookies. Flags: `--browser auto|chrome|brave|edge`, `--full`, `--max-pages N`.
+- **claude-code** — Local Claude Code chat sessions from `~/.claude/projects/`. Flag: `--include-self` to include sessions from this KB's own directory.
+- **browser-bookmarks** — Chrome/Brave/Edge saved bookmarks (local JSON file).
+- **github-stars** — Public GitHub stars for the handle in `.twitter-wiki/sources.json`. Set `GITHUB_TOKEN` env for higher rate limit.
+- **kindle** — One-shot import. Requires `--clippings <path-to-My Clippings.txt>`.
+- **all** — Run all configured sources in one go (kindle is skipped unless `--clippings` is given).
+
+All sources write into the shared `raw/items.jsonl`. The X source also maintains `raw/bookmarks.jsonl` for incremental sync via snowflake ids. Stdout is a one-line summary per source; stderr is verbose progress.
 
 After it finishes:
 
-- **Success with new bookmarks:** report the count and suggest `/kb-ingest` to add them to the wiki.
-- **Success with no new bookmarks:** say so plainly and stop.
-- **Auth error (cookies stale):** tell the user to log out and back into X in their browser, then retry.
-- **No browser found:** tell the user which browsers we look for (Chrome, Brave, Edge on macOS/Linux) and that they need to be logged into X.
-- **Rate limited:** tell the user to retry later; the script already retried with backoff.
+- **Success with new items:** report the count per source and suggest `/kb-ingest` to weave them into the wiki.
+- **Success with no new items:** say so plainly.
+- **X auth error:** cookies are stale — log out and back into X, then retry.
+- **Keychain dialog timeout (macOS):** the user has 2 minutes to approve. Rerun and tell them to click **Always Allow**.
+- **GitHub 404:** the handle in `sources.json` is wrong.
+- **Rate limit / no browser / missing clippings file:** surface the script's error.
 
-Do NOT auto-run `/kb-ingest` after sync — let the user choose. But make the suggestion explicit when there's new content.
+Do NOT auto-run `/kb-ingest` after sync — let the user decide.

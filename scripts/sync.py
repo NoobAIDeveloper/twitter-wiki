@@ -267,15 +267,93 @@ def sync(
     }
     _atomic_write(meta_path, json.dumps(new_meta, indent=2) + "\n")
 
-    # User-facing summary on stdout (for the slash command to surface)
-    print(
-        f"sync complete: {added} new, {len(merged)} total → "
-        f"{jsonl_path.relative_to(kb)}"
-    )
+    # User-facing summary on stdout (for the slash command to surface).
+    # Use os.path.relpath to tolerate /tmp → /private/tmp on macOS, where
+    # Path.relative_to would raise for symlinked path roots.
+    import os
+    try:
+        rel = os.path.relpath(jsonl_path, kb)
+    except ValueError:
+        rel = str(jsonl_path)
+    print(f"sync complete: {added} new, {len(merged)} total → {rel}")
     return 0
 
 
 # ---- Source dispatcher -----------------------------------------------------
+
+def _sync_kindle(kb: Path, clippings: Path | None) -> int:
+    from sources import kindle
+    from sources.base import replace_source_items
+
+    if clippings is None:
+        print(
+            "error: kindle source requires --clippings <path-to-My Clippings.txt>",
+            file=sys.stderr,
+        )
+        return 64
+
+    print(f"[sync] source=kindle · parsing {clippings}", file=sys.stderr)
+    try:
+        items = kindle.sync(kb, clippings_path=clippings)
+    except FileNotFoundError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    total, this_source = replace_source_items(kb, kindle.SOURCE_ID, items)
+    print(
+        f"[sync] kindle: {this_source} highlight(s) · items.jsonl now has "
+        f"{total} total",
+        file=sys.stderr,
+    )
+    print(f"sync complete: kindle → {this_source} items")
+    return 0
+
+
+def _sync_github_stars(kb: Path) -> int:
+    from sources import github_stars
+    from sources.base import replace_source_items
+    import os
+
+    handle = github_stars._load_handle(kb)
+    if not handle:
+        print(
+            "[sync] source=github-stars · no handle configured; skipping. "
+            "Add to sources.json: {\"github\": {\"handle\": \"yourname\"}}",
+            file=sys.stderr,
+        )
+        return 0
+
+    print(f"[sync] source=github-stars · fetching stars for @{handle}", file=sys.stderr)
+    token = os.environ.get("GITHUB_TOKEN")
+    try:
+        items = github_stars.sync(kb, handle=handle, token=token)
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    total, this_source = replace_source_items(kb, github_stars.SOURCE_ID, items)
+    print(
+        f"[sync] github-stars: {this_source} repo(s) · items.jsonl now has "
+        f"{total} total",
+        file=sys.stderr,
+    )
+    print(f"sync complete: github-stars → {this_source} items")
+    return 0
+
+
+def _sync_browser_bookmarks(kb: Path) -> int:
+    from sources import browser_bookmarks
+    from sources.base import replace_source_items
+
+    print("[sync] source=browser-bookmarks · reading local Bookmarks files", file=sys.stderr)
+    items = browser_bookmarks.sync(kb)
+    total, this_source = replace_source_items(kb, browser_bookmarks.SOURCE_ID, items)
+    print(
+        f"[sync] browser-bookmarks: {this_source} URL(s) · items.jsonl now "
+        f"has {total} total",
+        file=sys.stderr,
+    )
+    print(f"sync complete: browser-bookmarks → {this_source} items")
+    return 0
+
 
 def _sync_claude_code(kb: Path, *, include_self: bool = False) -> int:
     from sources import claude_code
@@ -325,27 +403,52 @@ def main() -> None:
         action="store_true",
         help="(claude-code) Include Claude Code sessions from the KB's own directory.",
     )
+    parser.add_argument(
+        "--clippings",
+        type=Path,
+        default=None,
+        help="(kindle) Path to My Clippings.txt",
+    )
     args = parser.parse_args()
 
     sources_to_run = (
-        ["x", "claude-code"] if args.source == "all" else [args.source]
+        ["x", "claude-code", "browser-bookmarks", "github-stars"]
+        if args.source == "all"
+        else [args.source]
     )
 
     exit_code = 0
     for src in sources_to_run:
-        if src == "x":
-            rc = sync(
-                args.kb,
-                browser=args.browser,
-                full=args.full,
-                max_pages=args.max_pages,
-                delay_ms=args.delay_ms,
-            )
-        elif src == "claude-code":
-            rc = _sync_claude_code(args.kb, include_self=args.include_self)
-        else:
-            print(f"error: unknown source {src!r}", file=sys.stderr)
-            rc = 64
+        try:
+            if src == "x":
+                rc = sync(
+                    args.kb,
+                    browser=args.browser,
+                    full=args.full,
+                    max_pages=args.max_pages,
+                    delay_ms=args.delay_ms,
+                )
+            elif src == "claude-code":
+                rc = _sync_claude_code(args.kb, include_self=args.include_self)
+            elif src == "browser-bookmarks":
+                rc = _sync_browser_bookmarks(args.kb)
+            elif src == "github-stars":
+                rc = _sync_github_stars(args.kb)
+            elif src == "kindle":
+                # Skip silently in --source all mode if no clippings path.
+                if args.source == "all" and args.clippings is None:
+                    print(
+                        "[sync] source=kindle · skipped (one-shot; provide --clippings to run)",
+                        file=sys.stderr,
+                    )
+                    continue
+                rc = _sync_kindle(args.kb, args.clippings)
+            else:
+                print(f"error: unknown source {src!r}", file=sys.stderr)
+                rc = 64
+        except Exception as exc:  # noqa: BLE001 — isolate per-source failures
+            print(f"error: source {src!r} crashed: {exc}", file=sys.stderr)
+            rc = 1
         if rc != 0:
             exit_code = rc
             # Keep going with other sources even if one fails.
