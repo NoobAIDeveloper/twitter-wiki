@@ -2,3 +2,11 @@ __pycache__/
 *.pyc
 .DS_Store
 .venv/
+
+# Never commit personal data. These files exist only inside a user's KB,
+# but block them at the repo level too as a safety net in case someone
+# clones or runs the skill from inside this repo.
+raw/
+*.jsonl
+.twitter-wiki/
+.personal-wiki/
