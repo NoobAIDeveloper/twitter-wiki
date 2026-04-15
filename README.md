@@ -1,13 +1,16 @@
 # twitter-wiki
 
-Turn your Twitter/X bookmarks into a living, interlinked knowledge base that
-you can actually read. A Claude Code skill plus a small set of Python scripts.
+Turn your Twitter/X bookmarks, ChatGPT and Claude.ai conversations, Claude Code
+sessions, browser bookmarks, GitHub stars, and Kindle highlights into a living,
+interlinked knowledge base that you can actually read. A Claude Code skill
+plus a small set of Python scripts.
 
-You bookmark things on X intending to come back to them. You don't. This tool
-syncs those bookmarks to your machine, clusters them into topics derived from
-*your* content, and asks Claude to synthesize each cluster into an Obsidian
-wiki page — TLDR, inline author attribution, direct quotes for high-engagement
-tweets, counter-arguments, wikilinks to related pages.
+You bookmark things, chat with AI assistants, and star repos intending to come
+back to them. You don't. This tool syncs all of it to your machine, clusters
+the content into topics derived from *your* material, and asks Claude to
+synthesize each cluster into an Obsidian wiki page — TLDR, inline author
+attribution, direct quotes for high-engagement content, counter-arguments,
+wikilinks to related pages.
 
 It works for any domain. No hardcoded topic list. If you bookmark recipes you
 get cooking pages; if you bookmark trades you get finance pages; if both, you
@@ -90,6 +93,22 @@ claude
 
 Open `~/my-kb` in Obsidian for the full experience (wikilink graph, page
 preview). Plain markdown readers work too.
+
+---
+
+## Data sources
+
+| Source | Config | How it syncs |
+|---|---|---|
+| `x` | none | Browser cookies → X's internal GraphQL. Default source. |
+| `chatgpt` | none | Browser cookies → ChatGPT's backend API. Q+A pairs extracted from conversation history. Fallback: `/kb-request-chatgpt-export` + `/kb-import-chatgpt <zip>`. |
+| `claude-ai` | none | Browser cookies → Claude.ai's backend API. Fallback: manual export + `/kb-import-claude <zip>`. |
+| `claude-code` | none | Reads local Claude Code session logs under `~/.claude/projects/`. |
+| `browser-bookmarks` | none | Reads Chrome/Brave/Edge bookmark JSON. |
+| `github-stars` | GitHub handle | Public API. `GITHUB_TOKEN` env var optional for higher rate limit. |
+| `kindle` | `--clippings` path | One-shot import from `My Clippings.txt` on the Kindle drive. |
+
+Run `/kb-sync --source <name>` or `/kb-sync --source all`. See `/kb-add-source <name>` for per-source config instructions.
 
 ---
 

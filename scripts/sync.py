@@ -268,11 +268,14 @@ def sync(
     _atomic_write(meta_path, json.dumps(new_meta, indent=2) + "\n")
 
     # User-facing summary on stdout (for the slash command to surface).
-    # Use os.path.relpath to tolerate /tmp → /private/tmp on macOS, where
-    # Path.relative_to would raise for symlinked path roots.
+    # Use os.path.relpath when the jsonl lives inside kb; otherwise fall
+    # back to the absolute path. Symlink chains like /tmp → /private/tmp
+    # on macOS would otherwise produce walk-up paths like ../../private/...
     import os
     try:
         rel = os.path.relpath(jsonl_path, kb)
+        if rel.startswith(".."):
+            rel = str(jsonl_path)
     except ValueError:
         rel = str(jsonl_path)
     print(f"sync complete: {added} new, {len(merged)} total → {rel}")
@@ -362,15 +365,26 @@ def _sync_chatgpt(kb: Path, *, browser: str = "auto", full: bool = False) -> int
     print("[sync] source=chatgpt · extracting session cookie", file=sys.stderr)
     try:
         new_items = chatgpt.sync(kb, browser=browser, full=full)
+    except chatgpt.ChatGPTBlockedError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        print(
+            "hint: run /kb-request-chatgpt-export to receive an export email, "
+            "then /kb-import-chatgpt <path> to ingest it.",
+            file=sys.stderr,
+        )
+        print("sync failed: chatgpt → cloudflare block")
+        return 6
     except chatgpt.ChatGPTAuthError as exc:
         print(f"error: {exc}", file=sys.stderr)
         print(
             "hint: if this keeps happening, use /kb-import-chatgpt with an export zip.",
             file=sys.stderr,
         )
+        print("sync failed: chatgpt → auth error")
         return 4
     except chatgpt.ChatGPTRateLimitError as exc:
         print(f"error: {exc}", file=sys.stderr)
+        print("sync failed: chatgpt → rate limited")
         return 5
     # Incremental: chatgpt.sync only returns new/updated convs. Preserve
     # previously-synced chatgpt items by merging before we replace.
@@ -396,15 +410,26 @@ def _sync_claude_ai(kb: Path, *, browser: str = "auto", full: bool = False) -> i
     print("[sync] source=claude-ai · extracting session cookie", file=sys.stderr)
     try:
         new_items = claude_ai.sync(kb, browser=browser, full=full)
+    except claude_ai.ClaudeAIBlockedError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        print(
+            "hint: export from Settings → Account → Export Account Data, "
+            "then run /kb-import-claude <path> to ingest it.",
+            file=sys.stderr,
+        )
+        print("sync failed: claude-ai → cloudflare block")
+        return 6
     except claude_ai.ClaudeAIAuthError as exc:
         print(f"error: {exc}", file=sys.stderr)
         print(
             "hint: if this keeps happening, use /kb-import-claude with an export zip.",
             file=sys.stderr,
         )
+        print("sync failed: claude-ai → auth error")
         return 4
     except claude_ai.ClaudeAIRateLimitError as exc:
         print(f"error: {exc}", file=sys.stderr)
+        print("sync failed: claude-ai → rate limited")
         return 5
     existing = [
         it for it in load_items(kb / "raw" / "items.jsonl")

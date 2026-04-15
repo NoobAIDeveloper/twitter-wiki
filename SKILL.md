@@ -1,6 +1,6 @@
 ---
 name: twitter-wiki
-description: Manage a Twitter/X bookmarks knowledge base. Sync bookmarks from a logged-in browser session, cluster them by topic, and synthesize an interlinked Obsidian wiki. Activate when the user is in a twitter-wiki KB directory (one with a CLAUDE.md that names this skill, or with a `.twitter-wiki/` subdirectory) or asks to sync, ingest, query, lint, recluster, or otherwise work with their bookmark wiki.
+description: Manage a personal knowledge base built from a user's Twitter/X bookmarks, ChatGPT and Claude.ai conversation history, Claude Code sessions, browser bookmarks, GitHub stars, and Kindle highlights. Sync from logged-in browser sessions, cluster by topic, and synthesize an interlinked Obsidian wiki. Activate when the user is in a twitter-wiki KB directory (one with a CLAUDE.md that names this skill, or with a `.twitter-wiki/` subdirectory) or asks to sync, ingest, query, lint, recluster, or otherwise work with their wiki.
 ---
 
 # twitter-wiki
@@ -113,12 +113,26 @@ When the user asks a question via `/kb-query` (or natural language):
 2. For each issue, decide: can you fix it autonomously? If yes, fix it. If no (e.g. requires content judgment beyond what's in the existing pages), report it to the user.
 3. Append to `wiki/log.md` under `lint`.
 
+## Supported sources
+
+`sync.py` dispatches to per-source adapters. Use `--source <name>` (or `--source all` to run everything configured).
+
+| Source | Config | Notes |
+|---|---|---|
+| `x` | none | Browser cookies from chrome/brave/edge. The original source. |
+| `chatgpt` | none | Browser cookies from chatgpt.com. Q+A pairs. Fallback: `/kb-request-chatgpt-export` + `/kb-import-chatgpt <zip>`. |
+| `claude-ai` | none | Browser cookies from claude.ai. Q+A pairs. Fallback: manual export + `/kb-import-claude <zip>`. |
+| `claude-code` | none | Walks `~/.claude/projects/` session logs. |
+| `browser-bookmarks` | none | Reads Chrome/Brave/Edge bookmark JSON. |
+| `github-stars` | handle in `sources.json` | Public API; `GITHUB_TOKEN` env var optional for higher rate limit. |
+| `kindle` | `--clippings <path>` | One-shot import from `My Clippings.txt`. |
+
 ## Sync workflow
 
-1. Run `~/.claude/skills/twitter-wiki/.venv/bin/python ~/.claude/skills/twitter-wiki/scripts/sync.py --kb $(pwd)`. It handles browser cookie extraction, GraphQL pagination, dedupe, and writes to `raw/bookmarks.jsonl` + `.twitter-wiki/sync-meta.json`.
-2. Report new bookmark count.
-3. If new bookmarks were added, suggest `/kb-ingest`.
-4. If sync failed with auth error, tell the user to re-login to X in their browser.
+1. Run `~/.claude/skills/twitter-wiki/.venv/bin/python ~/.claude/skills/twitter-wiki/scripts/sync.py --kb $(pwd) [--source <name>]`. Default source is `x`. Source adapters handle their own cookie extraction, pagination, and dedupe; outputs land in `raw/items.jsonl` (or `raw/bookmarks.jsonl` for `x`) with `.twitter-wiki/<source>-sync-meta.json` cursors.
+2. Report new item count.
+3. If new items were added, suggest `/kb-ingest`.
+4. If sync failed with auth error, tell the user to re-login in the browser for that source.
 
 ## Hard invariants — never break these
 

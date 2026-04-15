@@ -357,6 +357,7 @@ def extract_cookies(
     host_patterns: tuple[str, ...],
     wanted_names: set[str],
     *,
+    optional_names: set[str] | None = None,
     browser: str = "auto",
     site_label: str = "",
 ) -> dict[str, str]:
@@ -365,6 +366,11 @@ def extract_cookies(
 
     host_patterns are SQL LIKE strings matched against cookies.host_key
     (e.g. ``("%chat.openai.com", "%chatgpt.com")``).
+
+    ``wanted_names`` must all be found or we raise. ``optional_names``
+    are returned if present but never required — use this for
+    Cloudflare cookies (cf_clearance, __cf_bm) where absence just means
+    the user hasn't visited the site recently.
     """
     if sys.platform == "win32":
         raise NotImplementedError(
@@ -388,6 +394,7 @@ def extract_cookies(
                     _find_browser(bid),
                     host_patterns=host_patterns,
                     wanted_names=wanted_names,
+                    optional_names=optional_names,
                     site_label=label,
                 )
             except _KeychainTimeout:
@@ -405,6 +412,7 @@ def extract_cookies(
         _find_browser(browser),
         host_patterns=host_patterns,
         wanted_names=wanted_names,
+        optional_names=optional_names,
         site_label=label,
     )
 
@@ -414,6 +422,7 @@ def _extract_for(
     *,
     host_patterns: tuple[str, ...] = ("%x.com", "%twitter.com"),
     wanted_names: set[str] | None = None,
+    optional_names: set[str] | None = None,
     site_label: str = "x.com / twitter.com",
 ) -> dict[str, str]:
     db_path = _cookie_db_path(browser)
@@ -439,9 +448,11 @@ def _extract_for(
         ) from exc
 
     wanted = wanted_names if wanted_names is not None else {"ct0", "auth_token"}
+    optional = optional_names or set()
+    interesting = wanted | optional
     results: dict[str, str] = {}
     for name, encrypted in rows:
-        if name not in wanted:
+        if name not in interesting:
             continue
         try:
             value = _decrypt_value(encrypted, v10_key, v11_key, db_version)

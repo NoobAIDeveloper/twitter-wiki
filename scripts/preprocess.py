@@ -79,6 +79,14 @@ class Topic:
         author = (item.get("author") or item.get("authorHandle") or "")
         author = author.lstrip("@").lower()
 
+        has_positive_rule = bool(
+            self.authors or self.keywords or self.hashtags or self.regexes
+        )
+        # Source-only topics (no other rules) treat the source match itself
+        # as sufficient — i.e. "all items from this source go here."
+        if self.sources and not has_positive_rule:
+            return True
+
         if self.authors and author in self.authors:
             return True
         if self.keywords and any(kw in text for kw in self.keywords):

@@ -3,17 +3,21 @@
 Claude.ai source adapter.
 
 Same pattern as the ChatGPT adapter: pulls the logged-in `sessionKey`
-cookie from the user's browser, lists conversations from the user's
-organization(s), fetches per-conversation message trees, and emits
-one Item per user+assistant Q+A turn pair.
+cookie (plus any Cloudflare cookies the browser holds) from the user's
+browser, lists conversations from the user's organization(s), fetches
+per-conversation message trees, and emits one Item per user+assistant
+Q+A turn pair.
 
-Fragile (private API, subject to change). If it breaks, fall back to
-/kb-import-claude with an official export zip.
+Fragile path: Claude.ai sits behind Cloudflare. We pass along
+`cf_clearance` when present and send Chromium-shaped headers. If CF
+still blocks, the fallback is the manual export (Settings → Account →
+Export) routed through `/kb-import-claude`.
 """
 
 from __future__ import annotations
 
 import json
+import random
 import sys
 import time
 import urllib.error
@@ -24,14 +28,19 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from cookies import extract_cookies  # noqa: E402
 
-from .base import Item
+from sources._cfbrowser import (  # noqa: E402
+    CLOUDFLARE_OPTIONAL_COOKIES,
+    browser_headers,
+    looks_like_cf_block,
+)
+from sources.base import Item  # noqa: E402
 
 
 SOURCE_ID = "claude-ai"
 HOST_PATTERNS = ("%claude.ai",)
-COOKIE_NAMES = {"sessionKey"}
+SESSION_COOKIE = "sessionKey"
+COOKIE_NAMES = {SESSION_COOKIE}
 BASE = "https://claude.ai"
-USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 personal-wiki"
 
 MAX_USER_LEN = 4000
 MAX_ASSISTANT_LEN = 4000
@@ -44,55 +53,76 @@ class ClaudeAIAuthError(RuntimeError):
 
 
 class ClaudeAIRateLimitError(RuntimeError):
+    def __init__(self, message: str, retry_after: int = 60) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+class ClaudeAIBlockedError(RuntimeError):
+    """Cloudflare is serving a challenge page instead of the real API.
+    Orthogonal to cookie validity — the fix is to revisit claude.ai in the
+    browser, wait, or use the export-zip path."""
     pass
 
 
-def _get_session_key(browser: str = "auto") -> str:
+def _get_cookies(browser: str = "auto") -> dict[str, str]:
     cookies = extract_cookies(
         host_patterns=HOST_PATTERNS,
         wanted_names=COOKIE_NAMES,
+        optional_names=CLOUDFLARE_OPTIONAL_COOKIES,
         browser=browser,
         site_label="claude.ai",
     )
-    key = cookies.get("sessionKey")
-    if not key:
+    if SESSION_COOKIE not in cookies:
         raise ClaudeAIAuthError(
             "Missing sessionKey cookie. Log into https://claude.ai in your "
             "browser and retry."
         )
-    return key
+    return cookies
 
 
-def _request(url: str, session_key: str) -> Any:
-    headers = {
-        "User-Agent": USER_AGENT,
-        "Accept": "application/json",
-        "Cookie": f"sessionKey={session_key}",
-    }
+def _request(url: str, cookies: dict[str, str]) -> Any:
+    cookie_header = "; ".join(f"{k}={v}" for k, v in cookies.items())
+    headers = browser_headers(BASE, extra={"Cookie": cookie_header})
     req = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        body = ""
+        raw = ""
         try:
-            body = exc.read().decode("utf-8", errors="replace")[:300]
+            raw = exc.read().decode("utf-8", errors="replace")
         except Exception:  # noqa: BLE001
             pass
+        if exc.code == 403 and looks_like_cf_block(raw):
+            raise ClaudeAIBlockedError(
+                "Claude.ai is behind a Cloudflare challenge. Open "
+                "https://claude.ai in the same browser (which refreshes "
+                "cf_clearance), wait 30+ minutes if the block persists, or "
+                "export your data from Settings → Account → Export Account "
+                "Data and run `/kb-import-claude <path-to-zip>`."
+            ) from exc
+        snippet = raw[:300]
         if exc.code in (401, 403):
             raise ClaudeAIAuthError(
                 f"Claude.ai returned {exc.code}. Your session cookie is stale — "
-                f"log out and back into claude.ai and retry. Body: {body}"
+                f"log out and back into claude.ai and retry. Body: {snippet}"
             ) from exc
         if exc.code == 429:
+            try:
+                retry_after = int(exc.headers.get("Retry-After", "60"))
+            except (TypeError, ValueError):
+                retry_after = 60
+            retry_after = max(10, min(retry_after, 300))
             raise ClaudeAIRateLimitError(
-                f"Claude.ai rate-limited us ({exc.code}). Wait a few minutes."
+                f"Claude.ai rate-limited us; Retry-After={retry_after}s.",
+                retry_after=retry_after,
             ) from exc
-        raise RuntimeError(f"HTTP {exc.code} from {url}: {body}") from exc
+        raise RuntimeError(f"HTTP {exc.code} from {url}: {snippet}") from exc
 
 
-def _list_organizations(session_key: str) -> list[str]:
-    data = _request(f"{BASE}/api/organizations", session_key)
+def _list_organizations(cookies: dict[str, str]) -> list[str]:
+    data = _request(f"{BASE}/api/organizations", cookies)
     if not isinstance(data, list):
         raise ClaudeAIAuthError(
             "Unexpected response from /api/organizations — session may be invalid."
@@ -104,7 +134,7 @@ def _list_organizations(session_key: str) -> list[str]:
 
 
 def _list_conversations(
-    session_key: str,
+    cookies: dict[str, str],
     org_id: str,
     *,
     stop_at_update_time: str | None,
@@ -117,7 +147,7 @@ def _list_conversations(
             f"{BASE}/api/organizations/{org_id}/chat_conversations"
             f"?limit={PAGE_SIZE}&offset={offset}"
         )
-        data = _request(url, session_key)
+        data = _request(url, cookies)
         items = data if isinstance(data, list) else (data.get("items") or [])
         if not items:
             break
@@ -136,12 +166,14 @@ def _list_conversations(
     return out
 
 
-def _fetch_conversation(session_key: str, org_id: str, conv_uuid: str) -> dict[str, Any]:
+def _fetch_conversation(
+    cookies: dict[str, str], org_id: str, conv_uuid: str
+) -> dict[str, Any]:
     url = (
         f"{BASE}/api/organizations/{org_id}/chat_conversations/{conv_uuid}"
         f"?tree=True&rendering_mode=messages"
     )
-    return _request(url, session_key)
+    return _request(url, cookies)
 
 
 def _message_text(msg: dict[str, Any]) -> str:
@@ -165,8 +197,7 @@ def _pair_turns(conv: dict[str, Any]) -> list[Item]:
     conv_uuid = conv.get("uuid") or ""
     title = conv.get("name") or "(untitled)"
     messages = conv.get("chat_messages") or []
-    # Claude.ai chat_messages are chronological already, but sort by
-    # created_at defensively.
+    # chat_messages are chronological already, but sort defensively.
     messages = sorted(messages, key=lambda m: m.get("created_at") or "")
 
     items: list[Item] = []
@@ -251,67 +282,89 @@ def sync(
         except json.JSONDecodeError:
             stop_at = None
 
-    session_key = _get_session_key(browser=browser)
+    cookies = _get_cookies(browser=browser)
     print("[claude-ai] session key ok", file=sys.stderr)
 
-    org_ids = _list_organizations(session_key)
+    org_ids = _list_organizations(cookies)
     print(f"[claude-ai] {len(org_ids)} organization(s)", file=sys.stderr)
 
     all_conv_summaries: list[tuple[str, dict[str, Any]]] = []
     for org_id in org_ids:
-        conv_list = _list_conversations(session_key, org_id, stop_at_update_time=stop_at)
+        conv_list = _list_conversations(cookies, org_id, stop_at_update_time=stop_at)
         for c in conv_list:
             all_conv_summaries.append((org_id, c))
 
+    eta_min = max(1, round(len(all_conv_summaries) * 5.5 / 60))
     print(
-        f"[claude-ai] {len(all_conv_summaries)} new/updated conversation(s)",
+        f"[claude-ai] {len(all_conv_summaries)} new/updated conversation(s); "
+        f"ETA ~{eta_min} min (rate-limited retries are automatic)",
         file=sys.stderr,
     )
 
-    # Oldest first so the cursor advances monotonically on partial progress.
+    # Oldest-first so the cursor advances monotonically on partial progress.
     all_conv_summaries.sort(key=lambda pair: pair[1].get("updated_at") or "")
 
     all_items: list[Item] = []
     newest_update_time = stop_at or ""
-    rate_limited = False
+    halt_msg: str | None = None
     for i, (org_id, summary) in enumerate(all_conv_summaries, 1):
         conv_uuid = summary.get("uuid")
         if not conv_uuid:
             continue
-        try:
-            conv = _fetch_conversation(session_key, org_id, conv_uuid)
-        except ClaudeAIAuthError:
-            raise
-        except ClaudeAIRateLimitError:
-            print(
-                f"[claude-ai] rate-limited at {i-1}/{len(all_conv_summaries)}; "
-                f"persisting progress and stopping.",
-                file=sys.stderr,
-            )
-            rate_limited = True
+        conv: dict[str, Any] | None = None
+        skip = False
+        for attempt in range(3):
+            try:
+                conv = _fetch_conversation(cookies, org_id, conv_uuid)
+                break
+            except ClaudeAIAuthError:
+                raise
+            except ClaudeAIBlockedError:
+                halt_msg = (
+                    f"Cloudflare block at {i - 1}/{len(all_conv_summaries)}; "
+                    f"progress saved. Revisit claude.ai in your browser or export "
+                    f"from Settings → Account and use /kb-import-claude."
+                )
+                break
+            except ClaudeAIRateLimitError as exc:
+                wait = exc.retry_after + random.uniform(0, 5)
+                print(
+                    f"[claude-ai] rate-limited at {i}/{len(all_conv_summaries)}; "
+                    f"sleeping {wait:.0f}s (attempt {attempt + 1}/3)",
+                    file=sys.stderr,
+                )
+                time.sleep(wait)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[claude-ai] skip conversation {conv_uuid}: {exc}", file=sys.stderr)
+                skip = True
+                break
+        if halt_msg:
             break
-        except Exception as exc:  # noqa: BLE001
-            print(f"[claude-ai] skip conversation {conv_uuid}: {exc}", file=sys.stderr)
+        if skip:
             continue
+        if conv is None:
+            halt_msg = (
+                f"still rate-limited after 3 retries at "
+                f"{i - 1}/{len(all_conv_summaries)}; progress saved. Rerun "
+                f"/kb-sync --source claude-ai in ~30 min to pick up the "
+                f"remaining {len(all_conv_summaries) - i + 1}."
+            )
+            break
         all_items.extend(_pair_turns(conv))
         ut = summary.get("updated_at") or ""
         if ut > newest_update_time:
             newest_update_time = ut
         if i % 10 == 0:
             print(f"[claude-ai] fetched {i}/{len(all_conv_summaries)}", file=sys.stderr)
-        time.sleep(1.2)
+        time.sleep(random.uniform(4.0, 7.0))
 
     if newest_update_time:
         meta_path.write_text(
             json.dumps({"lastUpdateTime": newest_update_time}, indent=2) + "\n"
         )
 
-    if rate_limited:
-        print(
-            "[claude-ai] partial sync — rerun /kb-sync --source claude-ai in a "
-            "few minutes to pick up the rest.",
-            file=sys.stderr,
-        )
+    if halt_msg:
+        print(f"[claude-ai] {halt_msg}", file=sys.stderr)
 
     return [it.to_json() for it in all_items]
 

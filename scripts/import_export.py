@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -37,6 +38,14 @@ def main() -> None:
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)
         sys.exit(2)
+    except zipfile.BadZipFile:
+        print(
+            f"error: {args.zip} is not a valid zip file. Check that the "
+            f"download completed (no .part suffix) and that you pointed "
+            f"at the zip OpenAI/Anthropic emailed you.",
+            file=sys.stderr,
+        )
+        sys.exit(3)
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         sys.exit(3)
