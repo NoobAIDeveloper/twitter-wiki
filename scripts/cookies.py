@@ -255,20 +255,23 @@ def _copy_db(src: Path) -> Path:
     return dst
 
 
-def _query_cookies(db_path: Path) -> tuple[list[tuple[str, bytes]], int]:
+def _query_cookies(
+    db_path: Path,
+    host_patterns: tuple[str, ...] = ("%x.com", "%twitter.com"),
+) -> tuple[list[tuple[str, bytes]], int]:
     """Return (rows, db_version). rows is list of (name, encrypted_value).
 
-    The browser holds an exclusive lock on Cookies.sqlite while running, so
-    we always copy the DB (plus any -wal / -shm sidecars) to a temp file
-    before opening it.
+    host_patterns: SQL LIKE patterns matched against the cookies.host_key
+    column. Defaults to the X/Twitter hosts for backward compatibility.
     """
     tmp_db = _copy_db(db_path)
     try:
         conn = sqlite3.connect(str(tmp_db))
         try:
+            clause = " OR ".join(["host_key LIKE ?"] * len(host_patterns))
             cur = conn.execute(
-                "SELECT name, encrypted_value FROM cookies "
-                "WHERE host_key LIKE '%x.com' OR host_key LIKE '%twitter.com'"
+                f"SELECT name, encrypted_value FROM cookies WHERE {clause}",
+                host_patterns,
             )
             rows = [(r[0], bytes(r[1]) if r[1] is not None else b"") for r in cur.fetchall()]
             db_version = 0
@@ -350,7 +353,69 @@ def extract_twitter_cookies(browser: str = "auto") -> dict[str, str]:
     return _extract_for(_find_browser(browser))
 
 
-def _extract_for(browser: Browser) -> dict[str, str]:
+def extract_cookies(
+    host_patterns: tuple[str, ...],
+    wanted_names: set[str],
+    *,
+    browser: str = "auto",
+    site_label: str = "",
+) -> dict[str, str]:
+    """Generic cookie extractor. Same semantics as extract_twitter_cookies
+    but parameterized on which hosts and cookie names we care about.
+
+    host_patterns are SQL LIKE strings matched against cookies.host_key
+    (e.g. ``("%chat.openai.com", "%chatgpt.com")``).
+    """
+    if sys.platform == "win32":
+        raise NotImplementedError(
+            "Windows is not supported. Run on macOS or Linux."
+        )
+    if not (sys.platform == "darwin" or sys.platform.startswith("linux")):
+        raise NotImplementedError(f"Unsupported platform: {sys.platform}")
+
+    label = site_label or ", ".join(h.lstrip("%") for h in host_patterns)
+
+    if browser == "auto":
+        candidates = list_available_browsers()
+        if not candidates:
+            raise FileNotFoundError(
+                "No supported browser found. Install Chrome, Brave, or Edge and retry."
+            )
+        last_error: Exception | None = None
+        for bid in candidates:
+            try:
+                return _extract_for(
+                    _find_browser(bid),
+                    host_patterns=host_patterns,
+                    wanted_names=wanted_names,
+                    site_label=label,
+                )
+            except _KeychainTimeout:
+                raise
+            except (RuntimeError, FileNotFoundError) as exc:
+                last_error = exc
+                print(f"[cookies] {bid}: {exc}. Trying next browser...", file=sys.stderr)
+        assert last_error is not None
+        raise RuntimeError(
+            f"Tried browsers {candidates} but none yielded cookies for {label}. "
+            f"Last error: {last_error}"
+        )
+
+    return _extract_for(
+        _find_browser(browser),
+        host_patterns=host_patterns,
+        wanted_names=wanted_names,
+        site_label=label,
+    )
+
+
+def _extract_for(
+    browser: Browser,
+    *,
+    host_patterns: tuple[str, ...] = ("%x.com", "%twitter.com"),
+    wanted_names: set[str] | None = None,
+    site_label: str = "x.com / twitter.com",
+) -> dict[str, str]:
     db_path = _cookie_db_path(browser)
     if not db_path.exists():
         raise FileNotFoundError(
@@ -366,14 +431,14 @@ def _extract_for(browser: Browser) -> dict[str, str]:
         v10_key, v11_key = _linux_keys(browser)
 
     try:
-        rows, db_version = _query_cookies(db_path)
+        rows, db_version = _query_cookies(db_path, host_patterns=host_patterns)
     except (sqlite3.Error, OSError) as exc:
         raise RuntimeError(
             f"Could not read {browser.display_name} cookie DB at {db_path}: {exc}. "
             f"If the browser is running, close it and retry."
         ) from exc
 
-    wanted = {"ct0", "auth_token"}
+    wanted = wanted_names if wanted_names is not None else {"ct0", "auth_token"}
     results: dict[str, str] = {}
     for name, encrypted in rows:
         if name not in wanted:
@@ -393,8 +458,8 @@ def _extract_for(browser: Browser) -> dict[str, str]:
     if missing:
         raise RuntimeError(
             f"Found cookies in {browser.display_name} but missing {sorted(missing)} "
-            f"for x.com / twitter.com. You are probably not logged into X in this "
-            f"browser — open {browser.display_name}, log into https://x.com, and retry."
+            f"for {site_label}. You are probably not logged into that site in this "
+            f"browser — open {browser.display_name}, log into it, and retry."
         )
     return results
 
