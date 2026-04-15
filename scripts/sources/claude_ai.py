@@ -316,6 +316,43 @@ def sync(
     return [it.to_json() for it in all_items]
 
 
+def ingest_export(zip_path: Path) -> list[dict[str, Any]]:
+    """Parse an official Claude.ai export zip and emit Items.
+
+    The export contains `conversations.json` with entries shaped like the
+    API's per-conversation response (uuid, name, chat_messages), so we
+    reuse `_pair_turns` directly.
+    """
+    import zipfile
+
+    if not zip_path.exists():
+        raise FileNotFoundError(f"Export zip not found: {zip_path}")
+
+    with zipfile.ZipFile(zip_path) as zf:
+        names = zf.namelist()
+        target = next(
+            (n for n in names if n.endswith("conversations.json")),
+            None,
+        )
+        if target is None:
+            raise ValueError(
+                f"{zip_path.name} does not contain conversations.json — is "
+                f"this a Claude.ai export?"
+            )
+        raw = zf.read(target)
+
+    conversations = json.loads(raw.decode("utf-8"))
+    if not isinstance(conversations, list):
+        raise ValueError("conversations.json is not a list — unexpected format.")
+
+    items: list[Item] = []
+    for conv in conversations:
+        if not isinstance(conv, dict):
+            continue
+        items.extend(_pair_turns(conv))
+    return [it.to_json() for it in items]
+
+
 if __name__ == "__main__":
     import argparse
 

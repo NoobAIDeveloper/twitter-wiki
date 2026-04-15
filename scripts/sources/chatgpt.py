@@ -330,6 +330,39 @@ def sync(
     return [it.to_json() for it in all_items]
 
 
+def ingest_export(zip_path: Path) -> list[dict[str, Any]]:
+    """Parse an official ChatGPT export zip and emit Items.
+
+    The export contains a `conversations.json` file whose entries have the
+    same shape the API returns (title, conversation_id, mapping, ...), so
+    we can reuse `_pair_turns` directly.
+    """
+    import zipfile
+
+    if not zip_path.exists():
+        raise FileNotFoundError(f"Export zip not found: {zip_path}")
+
+    with zipfile.ZipFile(zip_path) as zf:
+        try:
+            raw = zf.read("conversations.json")
+        except KeyError as exc:
+            raise ValueError(
+                f"{zip_path.name} does not contain conversations.json — is this "
+                f"a ChatGPT export?"
+            ) from exc
+
+    conversations = json.loads(raw.decode("utf-8"))
+    if not isinstance(conversations, list):
+        raise ValueError("conversations.json is not a list — unexpected format.")
+
+    items: list[Item] = []
+    for conv in conversations:
+        if not isinstance(conv, dict):
+            continue
+        items.extend(_pair_turns(conv))
+    return [it.to_json() for it in items]
+
+
 if __name__ == "__main__":
     import argparse
 
