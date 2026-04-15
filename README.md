@@ -21,16 +21,21 @@ get both.
 ## How it works
 
 ```
-X bookmarks  →  sync.py        →  raw/bookmarks.jsonl
-                 (reads your browser cookies, hits X's internal GraphQL)
+sources       →  sync.py         →  raw/items.jsonl
+(X, ChatGPT, Claude.ai,            (per-source adapters: cookies,
+ Claude Code, bookmarks,            APIs, local logs, zip imports)
+ GitHub stars, Kindle)
 
-bookmarks    →  Claude         →  .twitter-wiki/cluster-map.json
+items         →  Claude          →  .twitter-wiki/cluster-map.json
                  (samples your content, derives 8–20 topics)
 
-cluster map  →  preprocess.py  →  raw/bookmarks/<topic>.md
+cluster map   →  preprocess.py   →  raw/bookmarks/<topic>.md
                  (deterministic router, multi-assign)
 
-batches      →  Claude         →  wiki/<topic>.md
+unsorted      →  Haiku subagent  →  _classifications.json → re-route
+ (optional)     (via Claude Code, not a separate API key)
+
+batches       →  Claude          →  wiki/<topic>.md
                  (synthesis: TLDR + prose + counter-args + wikilinks)
 ```
 
@@ -53,7 +58,7 @@ Claude's. The `notes/` directory is yours — the skill never reads it.
 ## Install
 
 ```bash
-git clone https://github.com/<you>/twitter-wiki ~/src/twitter-wiki
+git clone https://github.com/NoobAIDeveloper/twitter-wiki ~/src/twitter-wiki
 cd ~/src/twitter-wiki
 ./install.sh
 ```
@@ -96,6 +101,46 @@ preview). Plain markdown readers work too.
 
 ---
 
+## Common workflows
+
+**First-time setup with multiple sources.**
+```
+> /kb-init ~/my-kb
+> cd ~/my-kb && claude                  # fresh session so CLAUDE.md loads
+> /kb-add-source github-stars           # configure what needs config
+> /kb-sync --source all                 # pull everything
+> /kb-ingest                            # cluster + synthesize
+```
+
+**Daily-ish refresh.**
+```
+> /kb-sync --source all
+> /kb-ingest                            # only regenerates changed batches
+```
+
+**Keep it hands-off.** Set autosync once and forget it:
+```
+> /kb-enable-autosync --at 07:00 --sources x,chatgpt,claude-ai
+```
+
+**ChatGPT live sync blocked by Cloudflare.** Use the export path:
+```
+> /kb-request-chatgpt-export            # OpenAI emails you a zip (hours)
+> /kb-import-chatgpt ~/Downloads/<zip>  # ingest when it arrives
+```
+
+**Topics feel wrong.** Re-cluster with a hint:
+```
+> /kb-recluster merge business and entrepreneurship
+```
+
+**Ask the wiki a question.**
+```
+> /kb-query what's the consensus in my bookmarks on RAG vs long-context?
+```
+
+---
+
 ## Data sources
 
 | Source | Config | How it syncs |
@@ -114,17 +159,118 @@ Run `/kb-sync --source <name>` or `/kb-sync --source all`. See `/kb-add-source <
 
 ## Slash commands
 
-All commands are run inside a KB directory.
+Every command is run from inside a Claude Code session. `/kb-init` is the only
+one you can run from outside a KB — all the others expect you to be `cd`'d into
+a KB directory so `CLAUDE.md` loads.
 
-| Command | Purpose |
-|---|---|
-| `/kb-init <path>` | Scaffold a new KB (directory tree + CLAUDE.md + Obsidian config). |
-| `/kb-sync` | Pull new bookmarks from your logged-in browser. Incremental. |
-| `/kb-ingest` | Cluster + synthesize. Bootstraps the cluster map on first run. |
-| `/kb-recluster [hint]` | Re-derive the topic map. Optional natural-language hint like `"split finance from business"`. |
-| `/kb-query <question>` | Ask a question grounded in the wiki. Saves substantive answers. |
-| `/kb-lint` | Check frontmatter, TLDRs, counter-args, wikilinks, orphans. |
-| `/kb-status` | Sync state, bookmark count, ingest freshness. |
+### Setup
+
+**`/kb-init <path> [--no-obsidian] [--no-git] [--force]`**
+Scaffolds a new KB at `<path>` — directory tree, `CLAUDE.md`, `.gitignore`,
+Obsidian vault config. Run once per KB, from anywhere.
+```
+> /kb-init ~/my-kb
+```
+
+**`/kb-add-source <source-name>`**
+Walks you through per-source config. Most sources need nothing (cookies
+handle auth); `github-stars` needs your handle, `kindle` needs a clippings
+path. Writes to `.twitter-wiki/sources.json`.
+```
+> /kb-add-source github-stars
+> /kb-add-source kindle --clippings "/Volumes/Kindle/documents/My Clippings.txt"
+```
+
+### Sync
+
+**`/kb-sync [--source <name>] [--full] [--browser chrome|brave|edge]`**
+Pulls data from one or more configured sources. Default source is `x`.
+Use `--source all` to run every configured source, or name one explicitly.
+Incremental by default — only new items. Pass `--full` to re-pull everything.
+```
+> /kb-sync                          # just X bookmarks
+> /kb-sync --source chatgpt         # only ChatGPT
+> /kb-sync --source all             # every configured source
+> /kb-sync --source x --full        # ignore cursor, refetch
+```
+
+**`/kb-request-chatgpt-export`**
+Fallback when `/kb-sync --source chatgpt` is Cloudflare-blocked. POSTs to
+OpenAI's data-export endpoint so they email you a zip. Wait for the email
+(can take hours), then run `/kb-import-chatgpt` on the downloaded file.
+
+**`/kb-import-chatgpt <path-to-export.zip>`**
+Ingests an OpenAI-issued ChatGPT export zip. Use when live sync fails or
+you want a guaranteed full snapshot.
+```
+> /kb-import-chatgpt ~/Downloads/chatgpt-export-2026-04.zip
+```
+
+**`/kb-import-claude <path-to-export.zip>`**
+Same as above for Claude.ai. Export is manual: Claude.ai → Settings →
+Privacy → Export data.
+
+### Cluster + synthesize
+
+**`/kb-ingest [topic-name]`**
+The core loop: cluster items into topic batches, then synthesize a wiki
+page per batch. On first run, samples 15% of each source (clamped [10, 200]
+per source), derives 8–20 topics, and shows you the cluster map before
+proceeding. On subsequent runs, only regenerates pages whose batches grew.
+Pass a topic name to scope synthesis to just that page.
+```
+> /kb-ingest                        # all batches
+> /kb-ingest finance                # just wiki/finance.md
+```
+After rule-based routing, if items remain in `_unsorted`, `/kb-ingest`
+offers to classify them via a Haiku subagent (uses your Claude Code quota,
+not a separate API key) against the existing topics.
+
+**`/kb-recluster [hint]`**
+Re-derives the topic map when topics drift (too big, too small, near-dupes,
+or unsorted items suggest a missing topic). Optional natural-language hint
+guides the re-derivation. Reconciles existing wiki pages — renames, merges,
+splits — preserving content and updating wikilinks.
+```
+> /kb-recluster
+> /kb-recluster split finance from business
+> /kb-recluster merge llm-evals and ai-tooling
+```
+
+### Query + maintain
+
+**`/kb-query <question>`**
+Asks a question grounded in the wiki. Claude reads `wiki/index.md`, opens
+the relevant pages, and answers with wikilink citations. Substantive novel
+answers get saved to `wiki/queries/<slug>.md` so they join the graph.
+```
+> /kb-query what do people I follow say about prompt injection?
+> /kb-query summarize the best arguments against index investing from my bookmarks
+```
+
+**`/kb-lint`**
+Runs the lint script and fixes what it can: missing frontmatter, missing
+TLDRs, missing counter-args on concept pages, broken wikilinks, orphan
+pages. Reports issues requiring judgment.
+
+**`/kb-status`**
+One-screen readout: per-source item counts, last sync timestamps, ingest
+freshness (which batches grew since last synthesis), autosync schedule.
+
+### Autosync
+
+**`/kb-enable-autosync [--every <dur>] [--at <HH:MM>] [--sources x,chatgpt,...]`**
+Schedules `/kb-sync` to run on a cadence via Claude Code's cron support.
+```
+> /kb-enable-autosync --every 6h
+> /kb-enable-autosync --at 07:00 --sources x,chatgpt,claude-ai
+```
+
+**`/kb-autosync-status`**
+Shows the current schedule, next run, and last run result.
+
+**`/kb-disable-autosync`**
+Cancels the scheduled auto-sync for the current KB.
 
 ---
 
@@ -243,6 +389,16 @@ so you're never prompted again.
 
 **`/kb-sync` says no browser found.** The skill looks for Chrome, Brave, and
 Edge at their standard paths on macOS/Linux. Make sure you're logged in.
+
+**`/kb-sync --source chatgpt` fails with a Cloudflare block.** CF puts the
+session in cooldown. Visit chatgpt.com in your browser once (to refresh
+`cf_clearance`), wait a few minutes, and retry. If it keeps happening, use
+the export fallback: `/kb-request-chatgpt-export` → wait for email →
+`/kb-import-chatgpt <zip>`.
+
+**`/kb-sync --source chatgpt` hits a 429 rate-limit.** The adapter
+auto-retries with backoff; a single run of ~200 conversations takes ~20 min.
+If it halts anyway, just rerun — sync is incremental and resumes.
 
 **Sync works but `/kb-ingest` never starts clustering.** Check that
 `raw/bookmarks.jsonl` has content. On very small corpora (<20 bookmarks),
