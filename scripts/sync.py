@@ -389,6 +389,38 @@ def _sync_chatgpt(kb: Path, *, browser: str = "auto", full: bool = False) -> int
     return 0
 
 
+def _sync_claude_ai(kb: Path, *, browser: str = "auto", full: bool = False) -> int:
+    from sources import claude_ai
+    from sources.base import load_items, merge_items, replace_source_items
+
+    print("[sync] source=claude-ai · extracting session cookie", file=sys.stderr)
+    try:
+        new_items = claude_ai.sync(kb, browser=browser, full=full)
+    except claude_ai.ClaudeAIAuthError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        print(
+            "hint: if this keeps happening, use /kb-import-claude with an export zip.",
+            file=sys.stderr,
+        )
+        return 4
+    except claude_ai.ClaudeAIRateLimitError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 5
+    existing = [
+        it for it in load_items(kb / "raw" / "items.jsonl")
+        if it.get("source") == claude_ai.SOURCE_ID
+    ]
+    merged, _ = merge_items(existing, new_items)
+    total, this_source = replace_source_items(kb, claude_ai.SOURCE_ID, merged)
+    print(
+        f"[sync] claude-ai: {this_source} Q+A pair(s) · items.jsonl now has "
+        f"{total} total",
+        file=sys.stderr,
+    )
+    print(f"sync complete: claude-ai → {this_source} items")
+    return 0
+
+
 def _sync_claude_code(kb: Path, *, include_self: bool = False) -> int:
     from sources import claude_code
     from sources.base import replace_source_items
@@ -418,7 +450,7 @@ def main() -> None:
     parser.add_argument(
         "--source",
         default="x",
-        help="Source to sync: x (default), claude-code, chatgpt, browser-bookmarks, github-stars, kindle, all",
+        help="Source to sync: x (default), claude-code, chatgpt, claude-ai, browser-bookmarks, github-stars, kindle, all",
     )
     parser.add_argument(
         "--browser",
@@ -446,7 +478,7 @@ def main() -> None:
     args = parser.parse_args()
 
     sources_to_run = (
-        ["x", "claude-code", "chatgpt", "browser-bookmarks", "github-stars"]
+        ["x", "claude-code", "chatgpt", "claude-ai", "browser-bookmarks", "github-stars"]
         if args.source == "all"
         else [args.source]
     )
@@ -466,6 +498,8 @@ def main() -> None:
                 rc = _sync_claude_code(args.kb, include_self=args.include_self)
             elif src == "chatgpt":
                 rc = _sync_chatgpt(args.kb, browser=args.browser, full=args.full)
+            elif src == "claude-ai":
+                rc = _sync_claude_ai(args.kb, browser=args.browser, full=args.full)
             elif src == "browser-bookmarks":
                 rc = _sync_browser_bookmarks(args.kb)
             elif src == "github-stars":

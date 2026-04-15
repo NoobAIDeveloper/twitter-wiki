@@ -1,6 +1,6 @@
 ---
 description: Sync data from one or more configured sources into this KB
-argument-hint: [--source x|claude-code|chatgpt|browser-bookmarks|github-stars|kindle|all] [source-specific flags]
+argument-hint: [--source x|claude-code|chatgpt|claude-ai|browser-bookmarks|github-stars|kindle|all] [source-specific flags]
 ---
 
 The user wants to sync data into the current KB. The current working directory should be a KB (it should contain a `CLAUDE.md` and a `.twitter-wiki/` subdirectory). If it doesn't, tell the user to `cd` into their KB first or run `/kb-init` to scaffold one.
@@ -16,6 +16,7 @@ Supported sources:
 - **x** (default) — Twitter/X bookmarks via browser cookies. Flags: `--browser auto|chrome|brave|edge`, `--full`, `--max-pages N`.
 - **claude-code** — Local Claude Code chat sessions from `~/.claude/projects/`. Flag: `--include-self` to include sessions from this KB's own directory.
 - **chatgpt** — ChatGPT conversations via browser cookie (`__Secure-next-auth.session-token`). Flags: `--browser`, `--full`. Fragile — if it breaks, use `/kb-import-chatgpt` with an export zip.
+- **claude-ai** — Claude.ai conversations via browser cookie (`sessionKey`). Flags: `--browser`, `--full`. Fragile — if it breaks, use `/kb-import-claude` with an export zip.
 - **browser-bookmarks** — Chrome/Brave/Edge saved bookmarks (local JSON file).
 - **github-stars** — Public GitHub stars for the handle in `.twitter-wiki/sources.json`. Set `GITHUB_TOKEN` env for higher rate limit.
 - **kindle** — One-shot import. Requires `--clippings <path-to-My Clippings.txt>`.
