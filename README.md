@@ -61,7 +61,7 @@ Claude's. The `notes/` directory is yours — the skill never reads it.
 
 ```bash
 claude plugin marketplace add NoobAIDeveloper/engram
-claude plugin install engram
+claude plugin install engram@engram
 ```
 
 That's it. The Python venv and dependencies are set up automatically on first use.
