@@ -489,6 +489,30 @@ def _sync_notion(kb: Path, *, full: bool = False) -> int:
     return 0
 
 
+def _sync_granola(kb: Path, *, full: bool = False) -> int:
+    from sources import granola
+    from sources.base import load_items, merge_items, replace_source_items
+
+    print("[sync] source=granola · reading local cache", file=sys.stderr)
+    items = granola.sync(kb, full=full)
+
+    # Incremental: granola.sync only returns items for changed meetings and
+    # has already dropped their old chunks. Merge with any untouched
+    # meetings' chunks still in items.jsonl.
+    existing = [
+        it for it in load_items(kb / "raw" / "items.jsonl")
+        if it.get("source") == granola.SOURCE_ID
+    ]
+    merged, _ = merge_items(existing, items)
+    total, this_source = replace_source_items(kb, granola.SOURCE_ID, merged)
+    print(
+        f"[sync] granola: {this_source} chunk(s) · items.jsonl now has {total} total",
+        file=sys.stderr,
+    )
+    print(f"sync complete: granola → {this_source} items")
+    return 0
+
+
 def _sync_claude_code(kb: Path, *, include_self: bool = False) -> int:
     from sources import claude_code
     from sources.base import replace_source_items
@@ -518,7 +542,7 @@ def main() -> None:
     parser.add_argument(
         "--source",
         default="x",
-        help="Source to sync: x (default), claude-code, chatgpt, claude-ai, notion, browser-bookmarks, github-stars, kindle, all",
+        help="Source to sync: x (default), claude-code, chatgpt, claude-ai, notion, granola, browser-bookmarks, github-stars, kindle, all",
     )
     parser.add_argument(
         "--browser",
@@ -546,7 +570,7 @@ def main() -> None:
     args = parser.parse_args()
 
     sources_to_run = (
-        ["x", "claude-code", "chatgpt", "claude-ai", "notion", "browser-bookmarks", "github-stars"]
+        ["x", "claude-code", "chatgpt", "claude-ai", "notion", "granola", "browser-bookmarks", "github-stars"]
         if args.source == "all"
         else [args.source]
     )
@@ -570,6 +594,8 @@ def main() -> None:
                 rc = _sync_claude_ai(args.kb, browser=args.browser, full=args.full)
             elif src == "notion":
                 rc = _sync_notion(args.kb, full=args.full)
+            elif src == "granola":
+                rc = _sync_granola(args.kb, full=args.full)
             elif src == "browser-bookmarks":
                 rc = _sync_browser_bookmarks(args.kb)
             elif src == "github-stars":

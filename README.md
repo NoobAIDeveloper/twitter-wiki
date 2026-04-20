@@ -161,6 +161,7 @@ preview). Plain markdown readers work too.
 | `claude-ai` | none | Browser cookies → Claude.ai's backend API. Fallback: manual export + `/kb-import-claude <zip>`. |
 | `claude-code` | none | Reads local Claude Code session logs under `~/.claude/projects/`. |
 | `notion` | integration token | Notion v1 REST API as an internal integration. Long pages split along H1/H2 into chunks. Access is scoped per-page in Notion's UI. |
+| `granola` | none (macOS only) | Reads Granola's local `cache-v3.json`. AI summary + notes + transcript per meeting, chunked by heading. |
 | `browser-bookmarks` | none | Reads Chrome/Brave/Edge bookmark JSON. |
 | `github-stars` | GitHub handle | Public API. `GITHUB_TOKEN` env var optional for higher rate limit. |
 | `kindle` | `--clippings` path | One-shot import from `My Clippings.txt` on the Kindle drive. |

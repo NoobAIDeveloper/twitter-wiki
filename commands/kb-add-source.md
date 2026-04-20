@@ -3,7 +3,7 @@ description: Configure a new data source (GitHub, etc.) for this KB
 argument-hint: <source-name> [source-specific args]
 ---
 
-The user wants to enable a new data source for the current KB. Supported source names: `github-stars`, `claude-code`, `browser-bookmarks`, `kindle`, `chatgpt`, `claude-ai`, `notion`.
+The user wants to enable a new data source for the current KB. Supported source names: `github-stars`, `claude-code`, `browser-bookmarks`, `kindle`, `chatgpt`, `claude-ai`, `notion`, `granola`.
 
 The current working directory should be a KB (contain `CLAUDE.md`). If not, tell them to `cd` into their KB first or run `/kb-init`.
 
@@ -65,6 +65,19 @@ Long pages are split along H1/H2 headings into multiple chunks; pages without he
 Privacy note: during `/kb-ingest`, page content is sent to Anthropic's API (same as every other source). Anything the user doesn't want synthesized should not be shared with the integration in Notion's UI.
 
 After updating `sources.json`, tell them to run `/kb-sync --source notion`.
+
+### `granola`
+macOS-only. Granola stores every meeting in a local JSON cache at `~/Library/Application Support/Granola/cache-v3.json` — no API, no token, no browser cookies. If the cache is in the default location, no config is needed. Tell them to run `/kb-sync --source granola`.
+
+If they moved the cache or want to point at a backup, add an override to `sources.json`:
+
+```json
+{"granola": {"cache_path": "/path/to/cache-v3.json"}}
+```
+
+Chunking picks the highest-signal available content per meeting: AI summary (split along its H1/H2 headings) → user/AI notes (ProseMirror headings) → raw transcript (size-based windowing as a last resort). Meetings with no usable content anywhere are skipped.
+
+Privacy note: meeting content is sent to Anthropic's API during `/kb-ingest` for synthesis, same as every other source.
 
 ## After configuring
 

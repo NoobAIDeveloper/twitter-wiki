@@ -1,6 +1,6 @@
 ---
 name: engram
-description: Manage a personal knowledge base built from a user's Twitter/X bookmarks, ChatGPT and Claude.ai conversation history, Claude Code sessions, Notion pages, browser bookmarks, GitHub stars, and Kindle highlights. Sync from logged-in browser sessions and APIs, cluster by topic, and synthesize an interlinked Obsidian wiki. Activate when the user is in an engram KB directory (one with a CLAUDE.md that names this skill, or with a `.engram/` subdirectory) or asks to sync, ingest, query, lint, recluster, or otherwise work with their wiki.
+description: Manage a personal knowledge base built from a user's Twitter/X bookmarks, ChatGPT and Claude.ai conversation history, Claude Code sessions, Notion pages, Granola meeting notes, browser bookmarks, GitHub stars, and Kindle highlights. Sync from logged-in browser sessions, APIs, and local app caches, cluster by topic, and synthesize an interlinked Obsidian wiki. Activate when the user is in an engram KB directory (one with a CLAUDE.md that names this skill, or with a `.engram/` subdirectory) or asks to sync, ingest, query, lint, recluster, or otherwise work with their wiki.
 ---
 
 # engram
