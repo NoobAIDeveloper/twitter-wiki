@@ -67,34 +67,47 @@ Privacy note: during `/kb-ingest`, page content is sent to Anthropic's API (same
 After updating `sources.json`, tell them to run `/kb-sync --source notion`.
 
 ### `granola`
-macOS-only. Granola stores every meeting in a local JSON cache at `~/Library/Application Support/Granola/cache-v6.json` (older builds used v3/v5; the adapter resolves whichever is newest). No API, no token, no browser cookies — if the cache is in the default location, no path config is needed.
+macOS-only. Granola stores every meeting in a local JSON cache at `~/Library/Application Support/Granola/cache-v6.json` (older builds used v3/v5; the adapter resolves whichever is newest). For meetings you've AI-enhanced inside Granola, the adapter can also pull the enhanced summary from Granola's internal API — and the auth token for that is auto-detected from `supabase.json` next to the cache, so there's nothing to paste.
 
-Walk the user through ONE question. Present the options as a numbered list and let them reply with a letter, a number, or the mode name. If their reply is ambiguous or empty, default to `both` and tell them you've done so.
+Walk the user through TWO questions. Present each set of options as a numbered list and let them reply with a letter, a number, or the mode name. If their reply is ambiguous or empty, default to the recommended option and tell them you've done so.
+
+**Question 1 — content mode:**
 
 > What do you want ingested per meeting?
 >
-> [a] **Notes only** — just what you typed in the Granola editor.
+> [a] **Notes only** — just what you typed in the Granola editor (or the AI-enhanced summary, if available).
 > [b] **Transcript only** — raw dialogue captured from mic + system audio.
-> [c] **Both** — notes first, then transcript appended. *(recommended)*
-> [d] **Auto** — notes if you typed anything substantive (>200 chars), otherwise transcript.
+> [c] **Both** — notes/summary first, then transcript appended. *(recommended)*
+> [d] **Auto** — notes/summary if substantive (>200 chars), otherwise transcript.
 
-Map their answer to a mode string: `notes` | `transcript` | `both` | `auto`. Then merge into `.engram/sources.json`:
+Map their answer to a mode string: `notes` | `transcript` | `both` | `auto`.
+
+**Question 2 — AI-summary API:**
+
+> Pull AI-enhanced summaries from Granola's API when available? This pulls richer content for meetings you've enhanced; falls back to local cache otherwise.
+>
+> [Y] **Yes** — recommended. Works for both free and paid plans; the wizard auto-detects whether the API has anything to give you, so paid-plan users get the most benefit (their enhanced meetings have rich AI summaries to fetch). Free-tier users still try the API and silently fall back when there's nothing to pull.
+> [n] **No** — purely local, no network calls.
+
+Map their answer to `use_api: true | false`. Then merge into `.engram/sources.json`:
 
 ```json
-{"granola": {"content_mode": "<chosen-mode>"}}
+{"granola": {"content_mode": "<chosen-mode>", "use_api": true}}
 ```
+
+The Granola WorkOS access token is read automatically from `~/Library/Application Support/Granola/supabase.json` (the desktop app's session store) — no token paste needed. Don't ask the user about their subscription tier; the adapter tries the API and adapts to whatever it gets back.
 
 If the user volunteers that their cache lives somewhere unusual (moved drive, backup, multiple Granola installs), also set `cache_path` in the same `granola` block:
 
 ```json
-{"granola": {"content_mode": "both", "cache_path": "/path/to/cache-v6.json"}}
+{"granola": {"content_mode": "both", "use_api": true, "cache_path": "/path/to/cache-v6.json"}}
 ```
 
 Don't volunteer `cache_path` unprompted — most users don't need it.
 
-Chunking behavior given the chosen mode: `notes` and `transcript` produce a single stream of chunks. `both` emits notes chunks first (heading-split) followed by transcript chunks (size-windowed) under a single `granola:<doc_id>:<chunk_index>` id family. `auto` picks notes if it's substantive, else transcript, else both as a last resort. Meetings with no usable content in the chosen stream(s) are skipped.
+Chunking behavior given the chosen mode: `notes` and `transcript` produce a single stream of chunks. `both` emits notes/summary chunks first (heading-split) followed by transcript chunks (size-windowed) under a single `granola:<doc_id>:<chunk_index>` id family. `auto` picks notes/summary if it's substantive, else transcript, else both as a last resort. When `use_api` is on and a meeting has an enhanced summary on the server, that summary supersedes the local-cache notes for that meeting; otherwise local notes are used.
 
-Privacy note: meeting content is sent to Anthropic's API during `/kb-ingest` for synthesis, same as every other source. If the user is squeamish about transcript text leaving their machine, steer them to `notes` mode.
+Privacy note: meeting content is sent to Anthropic's API during `/kb-ingest` for synthesis, same as every other source. With `use_api` on, the adapter additionally talks to `api.granola.ai` (the same server the Granola desktop app already talks to). If the user is squeamish about transcript text leaving their machine, steer them to `notes` mode; if they don't want any extra network calls beyond Anthropic, set `use_api: false`.
 
 After updating `sources.json`, tell them to run `/kb-sync --source granola`.
 

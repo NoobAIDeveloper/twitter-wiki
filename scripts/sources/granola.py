@@ -5,9 +5,8 @@ Granola source adapter.
 Granola is a macOS-only meeting notetaker. Its desktop app stores every
 meeting in a single local JSON cache at
 `~/Library/Application Support/Granola/cache-v6.json` (older builds used
-v3/v5 — `_default_cache_path` resolves whatever's newest). No cloud API
-involved — this adapter reads the file directly, same pattern as the
-browser-bookmarks and claude-code adapters.
+v3/v5 — `_default_cache_path` resolves whatever's newest). The cache is
+the primary source for note + transcript content.
 
 The cache is wrapped as `{"cache": "<json-string>"}` (pre-v6,
 double-encoded) or `{"cache": {...}}` (v6+, direct). Either way, the
@@ -17,44 +16,64 @@ inner object has a `state` key with:
 - `meetingsMetadata`: map of doc_id → extra metadata (attendees, calendar)
 - `transcripts`: map of doc_id → list of transcript segments
 - `documentPanels`: map of doc_id → { panel_id → { original_content: html,
-   content: prosemirror } } — historically held the AI-generated summary,
-   but Granola no longer persists enhanced summaries to the local cache
-   (they're server-side now); this is parsed for forward-compat but is
-   effectively always empty in practice.
+   content: prosemirror } } — this used to hold the AI-generated summary
+   but Granola moved enhanced summaries server-side. The local panel map
+   is parsed for forward-compat as a *fallback only*; in practice it's
+   essentially always empty. The actual AI-summary HTML now lives behind
+   `https://api.granola.ai/v1/get-document-panels` (see API path below).
 - `documentLists` / `documentListsMetadata`: folder structure
+
+API path (Granola's internal HTTP API). When `granola.use_api` is true
+(default), the adapter pulls AI-enhanced summaries from
+`https://api.granola.ai/v1/get-document-panels` for each meeting. The
+WorkOS access token is auto-detected from
+`~/Library/Application Support/Granola/supabase.json` (the desktop app's
+session store) — no manual paste required. Free-tier users typically
+get 401/403 on the panels endpoint; the adapter logs once and falls
+back to local-only behavior for the rest of the run. Meetings without
+an AI-enhanced summary return an empty panel list and fall back to the
+local notes ProseMirror. The token can be overridden via
+`granola.api_token` if a user wants to use a different account.
 
 Chunking strategy — driven by `granola.content_mode` in
 `.engram/sources.json`. Four modes:
 
-- `notes`       — only the user-typed notes (ProseMirror headings).
+- `notes`       — AI-summary if available (preferred), else user-typed
+                  notes (ProseMirror headings).
 - `transcript`  — only the raw transcript (size-chunked at 4000 chars).
-- `both`        — notes first (heading-chunked), transcript appended as
-                  additional chunks (size-chunked). DEFAULT when the
+- `both`        — notes/AI-summary first (heading-chunked), transcript
+                  appended as additional chunks. DEFAULT when the
                   config field is missing or unrecognized.
-- `auto`        — notes if its rendered body is substantive (>200 chars
-                  excluding heading-only blocks), else transcript, else
-                  both as a last resort.
+- `auto`        — notes/AI-summary if its rendered body is substantive
+                  (>200 chars excluding heading-only blocks), else
+                  transcript, else both as a last resort.
 
-A surviving AI-summary panel (rare) takes priority over notes in the
-`notes`, `both`, and `auto` modes; in `transcript` mode it's ignored.
-Meetings with no usable content in any selected stream are skipped.
+In every non-transcript mode, an API-fetched AI summary takes priority
+over the local-cache notes. Meetings with no usable content in any
+selected stream are skipped.
 
 Item id: `granola:<meeting_id>:<chunk_index>` — single id family
-regardless of mode. In `both` mode notes chunks come first (indices
-0..K), transcript chunks follow (indices K+1..N).
+regardless of mode. In `both` mode notes/summary chunks come first
+(indices 0..K), transcript chunks follow (indices K+1..N).
 
-Config (optional) — both keys live under `granola` in
+Config (optional) — all keys live under `granola` in
 `.engram/sources.json`:
 
     {"granola": {"cache_path": "/custom/path/cache-v6.json",
-                 "content_mode": "both"}}
+                 "content_mode": "both",
+                 "use_api": true,
+                 "api_token": "..."}}
 """
 
 from __future__ import annotations
 
+import gzip
 import json
 import re
 import sys
+import time
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
@@ -143,6 +162,69 @@ def _load_content_mode(kb_dir: Path) -> str:
     return DEFAULT_CONTENT_MODE
 
 
+def _load_use_api(kb_dir: Path) -> bool:
+    """Return whether the API path is enabled (default True).
+
+    Only an explicit JSON `false` (or a falsy string like "false"/"no"/"0"
+    /"off") disables it; missing keys, nulls, and anything else default
+    to True so users get the richer content out of the box.
+    """
+    g = _read_granola_config(kb_dir)
+    if "use_api" not in g:
+        return True
+    raw = g.get("use_api")
+    if raw is False:
+        return False
+    if isinstance(raw, str):
+        s = raw.strip().lower()
+        if s in ("false", "no", "n", "0", "off", "disable", "disabled"):
+            return False
+        if s in ("true", "yes", "y", "1", "on", "enable", "enabled"):
+            return True
+    # null / unknown / True → True
+    return True
+
+
+def _load_workos_token() -> str | None:
+    """Auto-detect Granola's WorkOS access token from the desktop app's
+    session store. Returns None on any error so callers can degrade
+    gracefully — never crashes the sync.
+    """
+    sb = GRANOLA_DIR / "supabase.json"
+    if not sb.exists():
+        return None
+    try:
+        outer = json.loads(sb.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(outer, dict):
+        return None
+    wt = outer.get("workos_tokens")
+    if not isinstance(wt, str) or not wt.strip():
+        return None
+    try:
+        inner = json.loads(wt)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(inner, dict):
+        return None
+    tok = inner.get("access_token")
+    if isinstance(tok, str) and tok.strip():
+        return tok.strip()
+    return None
+
+
+def _load_api_token(kb_dir: Path) -> str | None:
+    """Resolve the API token. Explicit `granola.api_token` in
+    sources.json overrides the auto-detected one (handy for using a
+    different account); else fall back to supabase.json."""
+    g = _read_granola_config(kb_dir)
+    explicit = g.get("api_token")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+    return _load_workos_token()
+
+
 def _meta_path(kb_dir: Path) -> Path:
     return kb_dir / ".engram" / "granola-sync-meta.json"
 
@@ -161,6 +243,183 @@ def _write_meta(kb_dir: Path, meta: dict[str, Any]) -> None:
     p = _meta_path(kb_dir)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(meta, indent=2) + "\n")
+
+
+# ---- API client ------------------------------------------------------------
+
+GRANOLA_API_BASE = "https://api.granola.ai"
+
+
+class GranolaAPIError(RuntimeError):
+    pass
+
+
+class GranolaAPIAuthError(GranolaAPIError):
+    pass
+
+
+def _api_post(
+    path: str,
+    token: str,
+    body: dict[str, Any],
+    *,
+    timeout: int = 20,
+    max_retries: int = 4,
+) -> Any:
+    """POST to Granola's internal API with bearer auth and gzip handling.
+
+    Returns the parsed JSON body. Raises:
+      - GranolaAPIAuthError on 401/403
+      - GranolaAPIError on other 4xx, exhausted 5xx retries, exhausted
+        rate-limit retries, or persistent network errors
+
+    Always sends `Accept-Encoding: gzip` and decompresses if the server
+    actually applied gzip. Plain-text and JSON responses are also
+    handled. Retries on 429 (Retry-After-aware) and 5xx with exp
+    backoff.
+    """
+    url = GRANOLA_API_BASE + path
+    data = json.dumps(body).encode("utf-8")
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "Accept-Encoding": "gzip",
+        "User-Agent": "engram-granola/0.1",
+    }
+    req = urllib.request.Request(url, data=data, method="POST", headers=headers)
+
+    attempt = 0
+    while True:
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read()
+                if resp.headers.get("Content-Encoding", "").lower() == "gzip":
+                    raw = gzip.decompress(raw)
+                if not raw:
+                    return None
+                try:
+                    return json.loads(raw.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    raise GranolaAPIError(
+                        f"Granola POST {path} returned non-JSON body: {exc}"
+                    ) from exc
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 403):
+                raise GranolaAPIAuthError(
+                    f"Granola rejected the access token ({exc.code}). "
+                    f"Auth may have expired or the endpoint is paid-tier only."
+                ) from exc
+            if exc.code == 429:
+                retry_after = float(exc.headers.get("Retry-After") or 0) or (2 ** attempt)
+                attempt += 1
+                if attempt > max_retries:
+                    raise GranolaAPIError(
+                        f"Granola rate-limit hit, retries exhausted on {path}"
+                    ) from exc
+                time.sleep(min(retry_after, 60))
+                continue
+            if 500 <= exc.code < 600 and attempt < max_retries:
+                time.sleep(2 ** attempt)
+                attempt += 1
+                continue
+            try:
+                err_body = exc.read().decode("utf-8", errors="replace")[:300]
+            except Exception:
+                err_body = ""
+            raise GranolaAPIError(
+                f"Granola POST {path} → {exc.code}: {err_body}"
+            ) from exc
+        except urllib.error.URLError as exc:
+            if attempt < max_retries:
+                time.sleep(2 ** attempt)
+                attempt += 1
+                continue
+            raise GranolaAPIError(
+                f"Granola POST {path} network error: {exc}"
+            ) from exc
+
+
+_AUTH_FAILURE_MESSAGE_PATTERNS = (
+    "unsupported client",
+    "invalid token",
+    "unauthorized",
+    "forbidden",
+)
+_unknown_panel_shape_logged = False
+
+
+def _fetch_panels(doc_id: str, token: str) -> list[dict[str, Any]]:
+    """Fetch the panel list for one meeting. Returns the raw list (may
+    be empty for meetings without an enhanced summary).
+
+    Granola occasionally signals auth failures with HTTP 200 + a body
+    like ``{"message": "Unsupported client"}`` instead of a 401/403.
+    Detect that shape and raise GranolaAPIAuthError so the caller's
+    once-per-run latch fires and we don't poison the empty-panels cache.
+    """
+    global _unknown_panel_shape_logged
+    resp = _api_post("/v1/get-document-panels", token, {"document_id": doc_id})
+    if isinstance(resp, list):
+        return resp
+    # Defensive: some envelope shapes return {"panels": [...]}.
+    if isinstance(resp, dict) and isinstance(resp.get("panels"), list):
+        return resp["panels"]
+    if isinstance(resp, dict):
+        msg = resp.get("message")
+        if isinstance(msg, str):
+            low = msg.lower()
+            if any(p in low for p in _AUTH_FAILURE_MESSAGE_PATTERNS):
+                raise GranolaAPIAuthError(
+                    f"Granola panels endpoint returned auth-failure body: {msg!r}"
+                )
+        if not _unknown_panel_shape_logged:
+            print(
+                f"[granola] panels endpoint returned unexpected dict shape "
+                f"(keys={sorted(resp.keys())!r}); treating as empty.",
+                file=sys.stderr,
+            )
+            _unknown_panel_shape_logged = True
+    return []
+
+
+def _pick_best_panel(panels: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Pick the most-recently-updated non-deleted panel with non-empty
+    HTML content. Returns None if nothing qualifies."""
+    candidates = [
+        p for p in panels
+        if isinstance(p, dict)
+        and not p.get("deleted_at")
+        and isinstance(p.get("original_content"), str)
+        and p["original_content"].strip()
+    ]
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda p: str(
+            p.get("content_updated_at")
+            or p.get("updated_at")
+            or p.get("created_at")
+            or ""
+        ),
+    )
+
+
+def _strip_panel_boilerplate(html: str) -> str:
+    """Granola appends a `<hr>` followed by a 'Chat with meeting transcript'
+    paragraph to its panel HTML. Cleave it off — it's chrome, not content.
+    Tolerant to whitespace and minor markup variation."""
+    if not html:
+        return html
+    # Cut at the first `<hr>` whose tail mentions "Chat with meeting"
+    # (case-insensitive). If we don't see that exact tail, leave the
+    # full HTML alone — better to keep too much than to drop content.
+    m = re.search(r"<hr\s*/?>\s*<p[^>]*>\s*Chat with meeting transcript",
+                  html, flags=re.IGNORECASE)
+    if m:
+        return html[:m.start()].rstrip()
+    return html
 
 
 # ---- cache parsing ---------------------------------------------------------
@@ -553,25 +812,38 @@ def sync(
     cache_path = cache_path or _load_cache_path(kb_dir)
 
     content_mode = _load_content_mode(kb_dir)
-    print(f"[granola] content_mode={content_mode!r}", file=sys.stderr)
+    use_api = _load_use_api(kb_dir)
+    token = _load_api_token(kb_dir) if use_api else None
+    print(
+        f"[granola] content_mode={content_mode!r} use_api={use_api} "
+        f"token={'present' if token else 'missing'}",
+        file=sys.stderr,
+    )
 
     meta = _load_meta(kb_dir)
     prior_mode = meta.get("content_mode")
-    # If the configured mode changed since the last successful sync, the
-    # incremental cursor is no longer trustworthy: items.jsonl may hold
-    # chunks from streams the user just disabled (e.g. transcript content
-    # lingering after switching to `notes`-only). Force a full re-sync and
-    # purge ALL granola items so meetings now skipped under the new mode
-    # don't leave stale chunks behind. A missing prior_mode means this is
-    # the first sync since the field was introduced — treat as a match.
-    # Done before cache load so a tightening config change still purges
-    # stale items even if the cache is temporarily unavailable.
+    prior_use_api = meta.get("use_api")
+    # If the configured mode OR use_api changed since the last successful
+    # sync, the incremental cursor is no longer trustworthy: items.jsonl
+    # may hold chunks from streams or sources the user just disabled.
+    # Force a full re-sync and purge ALL granola items so meetings now
+    # skipped under the new config don't leave stale chunks behind.
+    # A missing prior value means this is the first sync since that
+    # field was introduced — treat as a match. Done before cache load
+    # so a tightening config change still purges stale items even if
+    # the cache is temporarily unavailable.
     mode_changed = prior_mode is not None and prior_mode != content_mode
-    if mode_changed:
+    use_api_changed = prior_use_api is not None and bool(prior_use_api) != use_api
+    config_changed = mode_changed or use_api_changed
+    if config_changed:
+        reasons: list[str] = []
+        if mode_changed:
+            reasons.append(f"content_mode {prior_mode!r}→{content_mode!r}")
+        if use_api_changed:
+            reasons.append(f"use_api {prior_use_api}→{use_api}")
         print(
-            f"[granola] content_mode changed ({prior_mode!r} → "
-            f"{content_mode!r}); forcing full re-sync and clearing stale "
-            f"granola items.",
+            f"[granola] config changed ({'; '.join(reasons)}); forcing "
+            f"full re-sync and clearing stale granola items.",
             file=sys.stderr,
         )
         drop_items_by_id_prefix(kb_dir, f"{SOURCE_ID}:")
@@ -581,11 +853,12 @@ def sync(
         state = load_cache(cache_path)
     except GranolaCacheError as exc:
         print(f"[granola] {exc}", file=sys.stderr)
-        # Even on cache miss, persist the active mode so the next sync
-        # doesn't see a stale prior_mode and re-trigger the purge.
-        if mode_changed:
+        # Even on cache miss, persist the active config so the next
+        # sync doesn't see a stale prior config and re-trigger the purge.
+        if config_changed:
             existing = dict(meta)
             existing["content_mode"] = content_mode
+            existing["use_api"] = use_api
             _write_meta(kb_dir, existing)
         return []
 
@@ -606,6 +879,27 @@ def sync(
     else:
         print(f"[granola] full sync from {cache_path}", file=sys.stderr)
 
+    # Per-run API state. `available` flips False after the first 401/403
+    # so we don't keep hammering the panels endpoint for every meeting.
+    api_state: dict[str, Any] = {
+        "available": bool(use_api and token),
+        "auth_error_logged": False,
+        "panels_fetched": 0,
+        "meetings_skipped": 0,
+    }
+    if use_api and not token:
+        print(
+            "[granola] use_api=true but no token found in supabase.json or "
+            "granola.api_token; falling back to local-only.",
+            file=sys.stderr,
+        )
+
+    # Persisted cache: meetings we previously fetched and saw [] for.
+    # Keyed by meeting_id → doc.updated_at at the time of that empty
+    # result. Lets us skip the network on subsequent runs unless the
+    # doc has been edited since.
+    panel_cache: dict[str, str] = dict(meta.get("meetings_without_panels") or {})
+
     all_items: list[Item] = []
     seen = 0
     changed = 0
@@ -620,7 +914,14 @@ def sync(
             if not updated or str(updated) <= last_synced_at:
                 continue
 
-        items = _build_items_for_meeting(meeting, content_mode=content_mode)
+        items = _build_items_for_meeting(
+            meeting,
+            content_mode=content_mode,
+            token=token,
+            use_api=use_api,
+            api_state=api_state,
+            panel_cache=panel_cache,
+        )
         if not items:
             continue
 
@@ -628,28 +929,40 @@ def sync(
         all_items.extend(items)
         changed += 1
 
+    # Garbage-collect panel_cache entries for meetings that no longer
+    # exist in the local cache (e.g. deleted upstream).
+    live_ids = {str(m["_resolved_id"]) for m in _iter_meetings(state)}
+    panel_cache = {k: v for k, v in panel_cache.items() if k in live_ids}
+
     now = datetime.now(timezone.utc).isoformat()
     _write_meta(kb_dir, {
         "last_synced_at": now,
         "content_mode": content_mode,
+        "use_api": use_api,
         "last_run_meetings_seen": seen,
         "last_run_meetings_changed": changed,
+        "last_run_api_panels_fetched": api_state.get("panels_fetched", 0),
+        "last_run_api_meetings_skipped": api_state.get("meetings_skipped", 0),
+        "meetings_without_panels": panel_cache,
         "cache_path": str(cache_path),
     })
     print(
         f"[granola] {seen} meeting(s) seen · {changed} changed · "
-        f"{len(all_items)} chunk(s) emitted",
+        f"{len(all_items)} chunk(s) emitted "
+        f"(api: {api_state.get('panels_fetched', 0)} fetched, "
+        f"{api_state.get('meetings_skipped', 0)} empty)",
         file=sys.stderr,
     )
     return [it.to_json() for it in all_items]
 
 
 def _build_notes_chunks(meeting: dict[str, Any]) -> tuple[list, str]:
-    """Return (chunks, content_part_label) for the notes-side stream.
+    """Return (chunks, content_part_label) for the local-cache notes
+    stream. Labels: "ai_summary" if a (rare) cached panel HTML survives,
+    else "notes". Chunks may be empty if no content is parseable.
 
-    Labels: "ai_summary" if a (rare) panel HTML survives, else "notes".
-    Chunks may be empty if neither stream has parseable content; the
-    caller decides what to do about that.
+    The API-driven path is handled separately by
+    `_build_api_summary_chunks` and supersedes this when available.
     """
     summary_html = meeting.get("ai_summary_html") or ""
     notes = meeting.get("notes") or meeting.get("panel_content")
@@ -674,6 +987,29 @@ def _build_notes_chunks(meeting: dict[str, Any]) -> tuple[list, str]:
     return chunks, label
 
 
+def _build_api_summary_chunks(html: str) -> list:
+    """Convert API-fetched panel HTML into chunks. Granola's panels use
+    `<h3>` as their top-level section header (not h1/h2), so we split
+    on h1/h2/h3 here. Trailing 'Chat with meeting transcript' boilerplate
+    is stripped first.
+    """
+    if not html or not html.strip():
+        return []
+    cleaned = _strip_panel_boilerplate(html)
+    blocks = _summary_html_to_blocks(cleaned)
+    if not blocks:
+        return []
+    chunks = chunk_by_headings(
+        blocks,
+        heading_levels=("heading_1", "heading_2", "heading_3"),
+    )
+    if len(chunks) == 1 and chunks[0].title is None and len(chunks[0].body) > 6000:
+        chunks = chunk_by_size(chunks[0].body, max_chars=4000)
+    if not any(c.body.strip() or c.title for c in chunks):
+        return []
+    return chunks
+
+
 def _notes_body_chars(chunks: list) -> int:
     """Count rendered body chars across notes chunks, excluding chunks
     that are pure heading (title-only, empty body). Used by `auto`."""
@@ -692,10 +1028,99 @@ def _build_transcript_chunks(meeting: dict[str, Any]) -> list:
     return chunk_by_size(transcript_text, max_chars=4000)
 
 
+def _try_fetch_api_summary(
+    meeting: dict[str, Any],
+    *,
+    token: str | None,
+    use_api: bool,
+    api_state: dict[str, Any],
+    panel_cache: dict[str, str],
+) -> tuple[list, str | None]:
+    """If the API path is enabled and viable for this meeting, fetch
+    panels and return (chunks, panel_updated_at). Returns ([], None) when
+    we should fall back to local notes.
+
+    `api_state` is a per-run mutable dict tracking auth-failed state so
+    we don't keep retrying once a 401/403 fires:
+        {"available": bool, "auth_error_logged": bool}
+
+    `panel_cache` is the persisted `meetings_without_panels` map: doc_id
+    → doc.updated_at when we last saw [] from the API. If the meeting
+    hasn't been updated since then, we skip the network call entirely.
+    """
+    if not use_api or not token:
+        return [], None
+    if not api_state.get("available", True):
+        return [], None
+    meeting_id = str(meeting["_resolved_id"])
+    doc_updated_at = str(meeting.get("updated_at") or meeting.get("content_updated_at") or "")
+    cached_at = panel_cache.get(meeting_id)
+    if cached_at and doc_updated_at and doc_updated_at <= cached_at:
+        # We previously fetched and got [] for this meeting; doc hasn't
+        # changed → skip the API call.
+        return [], None
+
+    try:
+        panels = _fetch_panels(meeting_id, token)
+    except GranolaAPIAuthError as exc:
+        if not api_state.get("auth_error_logged"):
+            print(
+                f"[granola] API auth failed ({exc}); falling back to "
+                f"local-only for the rest of this run.",
+                file=sys.stderr,
+            )
+            api_state["auth_error_logged"] = True
+        api_state["available"] = False
+        return [], None
+    except GranolaAPIError as exc:
+        # Per-meeting API error — don't blow up the whole run, just log
+        # and let this meeting fall back to local notes. Latch the log
+        # so a network outage with N meetings doesn't spam N near-identical
+        # lines; non-auth errors don't disable the API for the rest of
+        # the run though (a transient timeout shouldn't punish later
+        # meetings — just stop being noisy about it).
+        if not api_state.get("panel_error_logged"):
+            print(
+                f"[granola] panel fetch failed for {meeting_id}: {exc} "
+                f"(suppressing further panel-fetch errors this run)",
+                file=sys.stderr,
+            )
+            api_state["panel_error_logged"] = True
+        return [], None
+
+    best = _pick_best_panel(panels)
+    if best is None:
+        # Empty / all-deleted → mark in cache so next run skips the network.
+        if doc_updated_at:
+            panel_cache[meeting_id] = doc_updated_at
+        api_state["meetings_skipped"] = api_state.get("meetings_skipped", 0) + 1
+        return [], None
+
+    chunks = _build_api_summary_chunks(best.get("original_content") or "")
+    if not chunks:
+        if doc_updated_at:
+            panel_cache[meeting_id] = doc_updated_at
+        return [], None
+
+    api_state["panels_fetched"] = api_state.get("panels_fetched", 0) + 1
+    panel_updated_at = (
+        best.get("content_updated_at")
+        or best.get("updated_at")
+        or best.get("created_at")
+    )
+    # Drop any prior empty-cache entry — we now have content.
+    panel_cache.pop(meeting_id, None)
+    return chunks, panel_updated_at
+
+
 def _build_items_for_meeting(
     meeting: dict[str, Any],
     *,
     content_mode: str = DEFAULT_CONTENT_MODE,
+    token: str | None = None,
+    use_api: bool = False,
+    api_state: dict[str, Any] | None = None,
+    panel_cache: dict[str, str] | None = None,
 ) -> list[Item]:
     """Build chunked Items for a meeting per the given content_mode.
 
@@ -706,7 +1131,16 @@ def _build_items_for_meeting(
       - both with no notes → emit transcript-only (and vice versa).
       - auto picks notes if substantive, else transcript, else
         whatever single stream exists.
+
+    When `use_api` is True and a `token` is available, the AI-summary
+    path (Granola's internal API) is tried first for non-transcript
+    modes; if it returns content, it supersedes the local-cache notes.
     """
+    if api_state is None:
+        api_state = {"available": True, "auth_error_logged": False}
+    if panel_cache is None:
+        panel_cache = {}
+
     meeting_id = str(meeting["_resolved_id"])
     title = _meeting_title(meeting)
     ts = _meeting_timestamp(meeting)
@@ -741,12 +1175,29 @@ def _build_items_for_meeting(
     notes_label = "notes"
     transcript_chunks: list = []
 
+    # API summary takes priority over local notes for non-transcript modes.
+    api_chunks: list = []
+    if content_mode != "transcript":
+        api_chunks, _panel_updated_at = _try_fetch_api_summary(
+            meeting,
+            token=token,
+            use_api=use_api,
+            api_state=api_state,
+            panel_cache=panel_cache,
+        )
+
     if content_mode == "transcript":
         transcript_chunks = _build_transcript_chunks(meeting)
     elif content_mode == "notes":
-        notes_chunks, notes_label = _build_notes_chunks(meeting)
+        if api_chunks:
+            notes_chunks, notes_label = api_chunks, "ai_summary"
+        else:
+            notes_chunks, notes_label = _build_notes_chunks(meeting)
     elif content_mode == "auto":
-        notes_chunks, notes_label = _build_notes_chunks(meeting)
+        if api_chunks:
+            notes_chunks, notes_label = api_chunks, "ai_summary"
+        else:
+            notes_chunks, notes_label = _build_notes_chunks(meeting)
         body_chars = _notes_body_chars(notes_chunks)
         if body_chars >= AUTO_NOTES_BODY_THRESHOLD:
             # Notes is substantive — emit notes only, no transcript.
@@ -761,7 +1212,10 @@ def _build_items_for_meeting(
                 notes_chunks = []
             # else: only thin notes survives — emit it as last resort.
     else:  # "both" (and any unknown defensively defaulted upstream)
-        notes_chunks, notes_label = _build_notes_chunks(meeting)
+        if api_chunks:
+            notes_chunks, notes_label = api_chunks, "ai_summary"
+        else:
+            notes_chunks, notes_label = _build_notes_chunks(meeting)
         transcript_chunks = _build_transcript_chunks(meeting)
 
     if not notes_chunks and not transcript_chunks:

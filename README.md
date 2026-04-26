@@ -161,7 +161,7 @@ preview). Plain markdown readers work too.
 | `claude-ai` | none | Browser cookies → Claude.ai's backend API. Fallback: manual export + `/kb-import-claude <zip>`. |
 | `claude-code` | none | Reads local Claude Code session logs under `~/.claude/projects/`. |
 | `notion` | integration token | Notion v1 REST API as an internal integration. Long pages split along H1/H2 into chunks. Access is scoped per-page in Notion's UI. |
-| `granola` | optional `content_mode` (macOS only) | Reads Granola's local `cache-v*.json`. By default ingests notes + transcript per meeting (notes heading-chunked, transcript size-windowed). Set `granola.content_mode` to `notes`, `transcript`, `both`, or `auto` in `.engram/sources.json`. |
+| `granola` | optional `content_mode`, `use_api` (macOS only) | Reads Granola's local `cache-v*.json`. By default ingests notes + transcript per meeting (notes heading-chunked, transcript size-windowed). Set `granola.content_mode` to `notes`, `transcript`, `both`, or `auto` in `.engram/sources.json`. `granola.use_api` (default `true`) additionally fetches the AI-enhanced summary from Granola's internal API when available (auth auto-detected from `supabase.json`); works on both free and paid plans, paid users get the richest content. |
 | `browser-bookmarks` | none | Reads Chrome/Brave/Edge bookmark JSON. |
 | `github-stars` | GitHub handle | Public API. `GITHUB_TOKEN` env var optional for higher rate limit. |
 | `kindle` | `--clippings` path | One-shot import from `My Clippings.txt` on the Kindle drive. |
