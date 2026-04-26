@@ -166,7 +166,40 @@ preview). Plain markdown readers work too.
 | `github-stars` | GitHub handle | Public API. `GITHUB_TOKEN` env var optional for higher rate limit. |
 | `kindle` | `--clippings` path | One-shot import from `My Clippings.txt` on the Kindle drive. |
 
-Run `/kb-sync --source <name>` or `/kb-sync --source all`. See `/kb-add-source <name>` for per-source config instructions.
+Run `/kb-sync --source <name>` or `/kb-sync --source all`. For most sources, `/kb-add-source <name>` walks you through the dialog interactively. The two sources below need a one-time external setup step before the wizard can finish.
+
+### Notion setup
+
+Notion needs an internal integration token (cookies don't work — Notion's API is auth'd separately).
+
+1. Go to <https://notion.so/my-integrations> and click **+ New integration**.
+2. Name it (e.g. `engram`), pick the workspace, submit. Default capabilities (read content) are enough.
+3. Copy the **Internal Integration Secret** — starts with `secret_` or `ntn_`.
+4. Run `/kb-add-source notion` from your KB and paste the token when asked, or write it directly:
+   ```json
+   {"notion": {"token": "secret_..."}}
+   ```
+   in `.engram/sources.json`.
+5. In Notion, open each page or database you want indexed → `•••` menu → **Connections** → add the integration. Nested pages inherit access.
+6. `/kb-sync --source notion`.
+
+Long pages split along H1/H2 headings into multiple chunks; pages without headings fall back to size-based windowing.
+
+### Granola setup
+
+macOS only. Granola stores meetings in `~/Library/Application Support/Granola/cache-v*.json`. **No token paste required** — the WorkOS auth token is auto-detected from Granola's own `supabase.json`. Just install Granola and record at least one meeting.
+
+`/kb-add-source granola` asks two questions:
+
+1. **What to ingest** (`content_mode`):
+   - `notes` — only what you typed
+   - `transcript` — only the raw dialogue
+   - `both` (default) — notes first, transcript appended
+   - `auto` — notes if substantive (>200 body chars), else transcript
+
+2. **Use Granola's API for AI-enhanced summaries** (`use_api`, default yes): pulls the richer AI-generated summary panel that doesn't persist to the local cache. Works on both free and paid plans; paid users get the most enhanced content. Set to `no` for purely local operation, no network calls.
+
+Then `/kb-sync --source granola`. Re-running after editing/recording new meetings is incremental.
 
 ---
 
